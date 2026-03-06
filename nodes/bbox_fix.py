@@ -30,17 +30,6 @@ class BBoxMultipleFix:
       orig_width / orig_height      → dimensions crop AVANT upscale,
                                       pour resize retour après VAE Decode
       width / height                → dimensions finales (après upscale)
-
-    Workflow mode none :
-      BBox Fix → VAE Encode → KSampler → VAE Decode → ImageCompositeMasked
-                                                         ↑ x, y
-
-    Workflow mode target :
-      BBox Fix → VAE Encode → KSampler → VAE Decode
-        ↓ orig_w, orig_h                     ↓
-        ↓ x, y   → Image Resize (orig_w×orig_h) ←──┘
-                         ↓
-                 ImageCompositeMasked ← x, y
     """
 
     @classmethod
@@ -87,10 +76,8 @@ class BBoxMultipleFix:
             # Fallback si target ≤ bbox (inutile d'upscaler)
             if up_w > width and up_h > height:
                 use_upscale = True
-                # Ratio irréductible de l'upscale
                 g = math.gcd(up_w, up_h)
                 a, b = up_w // g, up_h // g
-                # k optimal → crop le plus proche du bbox
                 k = round((width / a + height / b) / 2)
                 k = max(1, k)
                 new_w = a * k
@@ -99,7 +86,6 @@ class BBoxMultipleFix:
                 print(f"[BBoxMultipleFix] target={t} ≤ bbox → fallback mode none")
 
         if not use_upscale:
-            # Mode none (ou fallback) : arrondi simple au multiple
             new_w = math.ceil(width  / mult) * mult
             new_h = math.ceil(height / mult) * mult
             up_w  = new_w
