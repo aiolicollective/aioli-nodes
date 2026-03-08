@@ -1,0 +1,13 @@
+[project]
+name = "aioli-nodes"
+version = "1.0.0"
+description = "Custom nodes for ComfyUI — Ratio Outpaint Calc and BBox Multiple Fix"
+license = { file = "LICENSE" }
+
+[project.urls]
+Repository = "https://github.com/aiolicollective/aioli-nodes"
+
+[tool.comfy]
+PublisherId = "aiolicollective"
+DisplayName = "Aioli Nodes"
+Icon = ""
