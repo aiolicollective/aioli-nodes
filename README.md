@@ -56,10 +56,9 @@ The node ensures the inpainted region stitches back **pixel-perfectly** onto the
 
 **Example**
 
-![BBox Multiple Fix — inpaint example](examples/BBOX_fixe_inpaint.jpg)
+![BBox Multiple Fix — inpaint example](examples/BBOX_Multiple_Fix_Example.jpg)
 
-*Left to right: base image → mask → inpaint result → before/after overlay.  
-The edited region fits the original contours exactly.*
+*The inpaint applied back onto the base image fits the original contours exactly — pixel-perfect edges, no alignment drift.*
 
 **Inputs**
 | Parameter | Type | Description |
