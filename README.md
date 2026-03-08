@@ -1,38 +1,44 @@
 # Aioli Nodes — ComfyUI Custom Node Suite
 
-Deux nodes utilitaires pour l'outpainting et l'inpainting dans ComfyUI.
+Two utility nodes for outpainting and inpainting in ComfyUI.
 
 ## Installation
 
-1. Copie le dossier `aioli-nodes` dans `ComfyUI/custom_nodes/`
-2. Redémarre ComfyUI
-3. Les nodes apparaissent dans la catégorie **Aioli Nodes**
+### Via ComfyUI Manager (recommended)
 
-Ou via **ComfyUI Manager** → Install via Git URL :
+**Install via Git URL:**
 ```
 https://github.com/aiolicollective/aioli-nodes
 ```
 
-Aucune dépendance à installer — utilise uniquement `math` (Python stdlib), `torch` et `Pillow` (déjà dans ComfyUI).
+> ℹ️ A submission to the [ComfyUI Registry](https://registry.comfy.org) is in progress so the nodes will soon be installable directly from the built-in manager.
+
+### Manual installation
+
+1. Copy the `aioli-nodes` folder into `ComfyUI/custom_nodes/`
+2. Restart ComfyUI
+3. The nodes appear under the **Aioli Nodes** category
+
+No extra dependencies — only `math` (Python stdlib), `torch` and `Pillow` (already bundled with ComfyUI).
 
 ---
 
 ## 🖼️ Ratio Outpaint Calc
 
-Prépare une image pour l'outpainting vers un ratio standard.  
-Calcule automatiquement le padding et génère le masque.
+Prepares an image for outpainting to a standard aspect ratio.  
+Automatically computes padding and generates the mask.
 
-**Entrées**
-| Paramètre | Type | Description |
+**Inputs**
+| Parameter | Type | Description |
 |-----------|------|-------------|
-| image | IMAGE | Image source |
+| image | IMAGE | Source image |
 | ratio | dropdown | `none` · `1:1` · `4:5` · `5:4` · `3:4` · `4:3` · `16:9` · `9:16` |
 
-**Sorties**
-| Sortie | Type | Description |
+**Outputs**
+| Output | Type | Description |
 |--------|------|-------------|
-| image_padded | IMAGE | Image paddée en gris neutre (0.5) |
-| mask | MASK | Masque binaire (0=conserver, 1=générer) |
+| image_padded | IMAGE | Image padded with neutral grey (0.5) |
+| mask | MASK | Binary mask (0 = keep, 1 = generate) |
 
 **Workflow**
 ```
@@ -43,39 +49,48 @@ Load Image → 🖼️ Ratio Outpaint Calc → VAE Encode (Inpaint) → KSampler
 
 ## 📐 BBox Multiple Fix
 
-S'insère après **Mask Bounding Box** (ComfyUI Essentials).  
-Arrondit le crop au multiple choisi et upscale optionnellement vers une résolution Flux.
+Plugs in right after **Mask Bounding Box** (ComfyUI Essentials).  
+Rounds the crop to the chosen multiple and optionally upscales to a Flux-friendly resolution.
 
-**Entrées**
-| Paramètre | Type | Description |
+The node ensures the inpainted region stitches back **pixel-perfectly** onto the base image — no border artefacts, no alignment drift.
+
+**Example**
+
+![BBox Multiple Fix — inpaint example](examples/BBOX_fixe_inpaint.jpg)
+
+*Left to right: base image → mask → inpaint result → before/after overlay.  
+The edited region fits the original contours exactly.*
+
+**Inputs**
+| Parameter | Type | Description |
 |-----------|------|-------------|
-| image | IMAGE | Image source complète (avant crop) |
-| mask | MASK | Masque source complet (avant crop) |
-| x | INT | Sortie x de Mask Bounding Box |
-| y | INT | Sortie y de Mask Bounding Box |
-| width | INT | Sortie width de Mask Bounding Box |
-| height | INT | Sortie height de Mask Bounding Box |
+| image | IMAGE | Full source image (before crop) |
+| mask | MASK | Full source mask (before crop) |
+| x | INT | `x` output from Mask Bounding Box |
+| y | INT | `y` output from Mask Bounding Box |
+| width | INT | `width` output from Mask Bounding Box |
+| height | INT | `height` output from Mask Bounding Box |
 | multiple | dropdown | `8 (VAE)` · `32 (SD1.5)` · `64 (SDXL/Flux)` |
 | target | dropdown | `none` · `512` · `768` · `1024` · `1536` · `2048` |
 
-**Sorties**
-| Sortie | Type | Description |
+**Outputs**
+| Output | Type | Description |
 |--------|------|-------------|
-| image_cropped | IMAGE | Image croppée (upscalée si target) |
-| mask_cropped | MASK | Masque croppé (upscalé si target) |
-| x | INT | Position x pour ImageCompositeMasked |
-| y | INT | Position y pour ImageCompositeMasked |
-| orig_width | INT | Largeur crop AVANT upscale (resize retour) |
-| orig_height | INT | Hauteur crop AVANT upscale (resize retour) |
-| width | INT | Largeur finale |
-| height | INT | Hauteur finale |
+| image_cropped | IMAGE | Cropped image (upscaled if target is set) |
+| mask_cropped | MASK | Cropped mask (upscaled if target is set) |
+| x | INT | x position for ImageCompositeMasked |
+| y | INT | y position for ImageCompositeMasked |
+| orig_width | INT | Crop width BEFORE upscale (use for resize-back) |
+| orig_height | INT | Crop height BEFORE upscale (use for resize-back) |
+| width | INT | Final width |
+| height | INT | Final height |
 
-**Workflow sans upscale**
+**Workflow without upscale**
 ```
 BBox Fix → VAE Encode → KSampler → VAE Decode → ImageCompositeMasked ← x, y
 ```
 
-**Workflow avec upscale**
+**Workflow with upscale**
 ```
 BBox Fix → VAE Encode → KSampler → VAE Decode
   ↓ orig_width, orig_height              ↓
