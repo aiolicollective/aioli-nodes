@@ -17,7 +17,8 @@ class BBoxMultipleFix:
     Mode none :
       Arrondit width/height au multiple choisi (×8/32/64).
       Si le crop dépasse MAX_SIDE (2048), la zone complète est conservée
-      mais l'image/mask est downscalé proportionnellement.
+      mais l'image/mask est downscalé proportionnellement, en préservant
+      le ratio exact via la même logique gcd que l'upscale.
       → orig_width/orig_height = taille crop réelle dans la source
       → width/height           = taille downscalée pour le VAE Encode
 
@@ -97,12 +98,33 @@ class BBoxMultipleFix:
             new_w = math.ceil(width  / mult) * mult
             new_h = math.ceil(height / mult) * mult
 
-            # Si le crop dépasse MAX_SIDE : downscale proportionnel du tenseur
-            # (la zone de crop dans la source reste intacte → orig_w/orig_h complet)
+            # Si le crop dépasse MAX_SIDE : downscale en préservant le ratio exact
+            # Même logique que l'upscale : gcd → ratio irréductible a/b → plus grand k valide
             if new_w > MAX_SIDE or new_h > MAX_SIDE:
-                scale = MAX_SIDE / max(new_w, new_h)
-                up_w = max(mult, math.floor(new_w * scale / mult) * mult)
-                up_h = max(mult, math.floor(new_h * scale / mult) * mult)
+                g = math.gcd(new_w, new_h)
+                a, b = new_w // g, new_h // g
+
+                # k_step : plus petit k tel que a*k et b*k soient tous deux multiples de mult
+                k_step_a = mult // math.gcd(a, mult)
+                k_step_b = mult // math.gcd(b, mult)
+                k_step   = k_step_a * k_step_b // math.gcd(k_step_a, k_step_b)  # lcm
+
+                k_max = min(MAX_SIDE // a, MAX_SIDE // b)
+                k     = (k_max // k_step) * k_step
+
+                if k >= k_step:
+                    # Ratio exactement préservé ✓
+                    up_w = a * k
+                    up_h = b * k
+                else:
+                    # Fallback rare : snap sur le côté dominant, dériver l'autre par ratio
+                    scale = MAX_SIDE / max(new_w, new_h)
+                    if new_w >= new_h:
+                        up_w = max(mult, math.floor(new_w * scale / mult) * mult)
+                        up_h = max(mult, round(up_w * new_h / new_w / mult) * mult)
+                    else:
+                        up_h = max(mult, math.floor(new_h * scale / mult) * mult)
+                        up_w = max(mult, round(up_h * new_w / new_h / mult) * mult)
             else:
                 up_w = new_w
                 up_h = new_h
@@ -146,7 +168,7 @@ class BBoxMultipleFix:
 
     def _resize(self, tensor, new_W, new_H, mode):
         frames = []
-        for b in range(tensor.shape[0]):
+        for b in range(tensor.shape[0]):\
             arr = (tensor[b].cpu().numpy() * 255).clip(0, 255).astype(np.uint8)
             if mode == "image":
                 pil = Image.fromarray(arr).resize((new_W, new_H), Image.LANCZOS)
