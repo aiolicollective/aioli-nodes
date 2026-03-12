@@ -6,6 +6,9 @@ from PIL import Image
 
 TARGET_SIZES = ["none", "512", "768", "1024", "1536", "2048"]
 
+# Hard cap for Flux / SDXL compatibility (max pixels on any side)
+MAX_SIDE = 2048
+
 
 class BBoxMultipleFix:
     """
@@ -14,6 +17,7 @@ class BBoxMultipleFix:
     Mode none :
       Arrondit width/height au multiple choisi (×8/32/64).
       Crop reste au plus proche du bbox d'origine.
+      Le crop est plafonné à MAX_SIDE (2048) pour la compatibilité Flux.
 
     Mode target (512/768/1024/1536/2048) :
       1. Calcule les dimensions upscale (target × ?) en multiple de 64.
@@ -22,7 +26,8 @@ class BBoxMultipleFix:
          → crop et upscale ont le MÊME ratio exact → mask parfaitement
            aligné, downscale retour pixel-perfect.
       4. Upscale Lanczos : crop → target.
-      Si target ≤ bbox (pas de sens d'upscaler) : fallback → mode none.
+      Si target ≤ bbox (pas de sens d'upscaler) : fallback → mode none
+      avec cap à MAX_SIDE pour rester compatible Flux.
 
     Sorties :
       image_cropped / mask_cropped  → VAE Encode (Inpaint)
@@ -83,13 +88,24 @@ class BBoxMultipleFix:
                 new_w = a * k
                 new_h = b * k
             else:
-                print(f"[BBoxMultipleFix] target={t} ≤ bbox → fallback mode none")
+                print(f"[BBoxMultipleFix] target={t} ≤ bbox → fallback mode none (cap {MAX_SIDE}px)")
 
         if not use_upscale:
+            # Arrondi au multiple supérieur
             new_w = math.ceil(width  / mult) * mult
             new_h = math.ceil(height / mult) * mult
-            up_w  = new_w
-            up_h  = new_h
+
+            # ── FIX : cap à MAX_SIDE pour la compatibilité Flux ──────────────
+            if new_w > MAX_SIDE or new_h > MAX_SIDE:
+                scale = MAX_SIDE / max(new_w, new_h)
+                # floor pour ne pas dépasser MAX_SIDE, puis alignement multiple
+                new_w = max(mult, math.floor(new_w * scale / mult) * mult)
+                new_h = max(mult, math.floor(new_h * scale / mult) * mult)
+                print(f"[BBoxMultipleFix] capped   : crop réduit à {new_w}x{new_h} (max {MAX_SIDE}px/côté)")
+            # ─────────────────────────────────────────────────────────────────
+
+            up_w = new_w
+            up_h = new_h
 
         # Expansion symétrique autour du bbox
         new_x = x - (new_w - width)  // 2
