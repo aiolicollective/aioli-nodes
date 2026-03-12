@@ -16,8 +16,10 @@ class BBoxMultipleFix:
 
     Mode none :
       Arrondit width/height au multiple choisi (×8/32/64).
-      Crop reste au plus proche du bbox d'origine.
-      Le crop est plafonné à MAX_SIDE (2048) pour la compatibilité Flux.
+      Si le crop dépasse MAX_SIDE (2048), la zone complète est conservée
+      mais l'image/mask est downscalé proportionnellement.
+      → orig_width/orig_height = taille crop réelle dans la source
+      → width/height           = taille downscalée pour le VAE Encode
 
     Mode target (512/768/1024/1536/2048) :
       1. Calcule les dimensions upscale (target × ?) en multiple de 64.
@@ -27,14 +29,14 @@ class BBoxMultipleFix:
            aligné, downscale retour pixel-perfect.
       4. Upscale Lanczos : crop → target.
       Si target ≤ bbox (pas de sens d'upscaler) : fallback → mode none
-      avec cap à MAX_SIDE pour rester compatible Flux.
+      avec downscale à MAX_SIDE pour rester compatible Flux.
 
     Sorties :
       image_cropped / mask_cropped  → VAE Encode (Inpaint)
       x / y                         → ImageCompositeMasked
-      orig_width / orig_height      → dimensions crop AVANT upscale,
-                                      pour resize retour après VAE Decode
-      width / height                → dimensions finales (après upscale)
+      orig_width / orig_height      → dimensions crop DANS la source
+                                      (pour resize retour après VAE Decode)
+      width / height                → dimensions finales (après scale)
     """
 
     @classmethod
@@ -91,21 +93,20 @@ class BBoxMultipleFix:
                 print(f"[BBoxMultipleFix] target={t} ≤ bbox → fallback mode none (cap {MAX_SIDE}px)")
 
         if not use_upscale:
-            # Arrondi au multiple supérieur
+            # Arrondi au multiple supérieur — zone complète conservée
             new_w = math.ceil(width  / mult) * mult
             new_h = math.ceil(height / mult) * mult
 
-            # ── FIX : cap à MAX_SIDE pour la compatibilité Flux ──────────────
+            # Si le crop dépasse MAX_SIDE : downscale proportionnel du tenseur
+            # (la zone de crop dans la source reste intacte → orig_w/orig_h complet)
             if new_w > MAX_SIDE or new_h > MAX_SIDE:
                 scale = MAX_SIDE / max(new_w, new_h)
-                # floor pour ne pas dépasser MAX_SIDE, puis alignement multiple
-                new_w = max(mult, math.floor(new_w * scale / mult) * mult)
-                new_h = max(mult, math.floor(new_h * scale / mult) * mult)
-                print(f"[BBoxMultipleFix] capped   : crop réduit à {new_w}x{new_h} (max {MAX_SIDE}px/côté)")
-            # ─────────────────────────────────────────────────────────────────
-
-            up_w = new_w
-            up_h = new_h
+                up_w = max(mult, math.floor(new_w * scale / mult) * mult)
+                up_h = max(mult, math.floor(new_h * scale / mult) * mult)
+                print(f"[BBoxMultipleFix] downscale: {new_w}x{new_h} → {up_w}x{up_h} (max {MAX_SIDE}px/côté)")
+            else:
+                up_w = new_w
+                up_h = new_h
 
         # Expansion symétrique autour du bbox
         new_x = x - (new_w - width)  // 2
@@ -126,15 +127,16 @@ class BBoxMultipleFix:
         print(f"[BBoxMultipleFix] bbox     : {width}x{height} @({x},{y})")
         print(f"[BBoxMultipleFix] crop     : {orig_w}x{orig_h} @({new_x},{new_y})")
 
-        # Crop image et mask
+        # Crop image et mask (zone complète)
         img_cropped = image[:, new_y:new_y + new_h, new_x:new_x + new_w, :]
         if mask.dim() == 2:
             mask = mask.unsqueeze(0)
         mask_cropped = mask[:, new_y:new_y + new_h, new_x:new_x + new_w]
 
-        # Upscale Lanczos si target valide
-        if use_upscale and (up_w != orig_w or up_h != orig_h):
-            print(f"[BBoxMultipleFix] upscale  : {orig_w}x{orig_h} → {up_w}x{up_h}")
+        # Upscale ou downscale Lanczos si nécessaire
+        if up_w != orig_w or up_h != orig_h:
+            label = "upscale " if use_upscale else "downscale"
+            print(f"[BBoxMultipleFix] {label} : {orig_w}x{orig_h} → {up_w}x{up_h}")
             img_cropped  = self._resize(img_cropped,  up_w, up_h, "image")
             mask_cropped = self._resize(mask_cropped, up_w, up_h, "mask")
             final_w, final_h = up_w, up_h
