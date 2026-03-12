@@ -4,14 +4,15 @@ Two utility nodes for outpainting and inpainting in ComfyUI.
 
 ## Installation
 
-### Via ComfyUI Manager (recommended)
+### Via ComfyUI Registry (recommended)
 
-**Install via Git URL:**
+Search **"Aioli Nodes"** directly in the ComfyUI Manager → Install Nodes.
+
+### Via Git URL
+
 ```
 https://github.com/aiolicollective/aioli-nodes
 ```
-
-> ℹ️ A submission to the [ComfyUI Registry](https://registry.comfy.org) is in progress so the nodes will soon be installable directly from the built-in manager.
 
 ### Manual installation
 
@@ -75,25 +76,87 @@ The node ensures the inpainted region stitches back **pixel-perfectly** onto the
 **Outputs**
 | Output | Type | Description |
 |--------|------|-------------|
-| image_cropped | IMAGE | Cropped image (upscaled if target is set) |
-| mask_cropped | MASK | Cropped mask (upscaled if target is set) |
+| image_cropped | IMAGE | Cropped image (scaled if target is set or if bbox > 2048px) |
+| mask_cropped | MASK | Cropped mask (scaled if target is set or if bbox > 2048px) |
 | x | INT | x position for ImageCompositeMasked |
 | y | INT | y position for ImageCompositeMasked |
-| orig_width | INT | Crop width BEFORE upscale (use for resize-back) |
-| orig_height | INT | Crop height BEFORE upscale (use for resize-back) |
-| width | INT | Final width |
-| height | INT | Final height |
+| orig_width | INT | Crop width BEFORE scale (use for resize-back after VAE Decode) |
+| orig_height | INT | Crop height BEFORE scale (use for resize-back after VAE Decode) |
+| width | INT | Final width (after scale) |
+| height | INT | Final height (after scale) |
 
-**Workflow without upscale**
+**Scaling behaviour**
+
+| Situation | Behaviour |
+|-----------|----------|
+| bbox ≤ 2048, target `none` | Round up to multiple only — no scale |
+| bbox ≤ 2048, target set | Upscale crop to target — pixel-perfect ratio via GCD |
+| bbox > 2048 (any target) | Downscale crop to fit 2048px — ratio preserved via GCD |
+
+**Workflow without scale**
 ```
 BBox Fix → VAE Encode → KSampler → VAE Decode → ImageCompositeMasked ← x, y
 ```
 
-**Workflow with upscale**
+**Workflow with upscale / downscale**
 ```
 BBox Fix → VAE Encode → KSampler → VAE Decode
   ↓ orig_width, orig_height              ↓
-  ↓ x, y        → Image Resize ←────────┘
+  ↓ x, y        → ImageResize+ ←────────┘
                        ↓
                ImageCompositeMasked ← x, y
 ```
+
+---
+
+## 🔁 Example Workflow — Flux2Klein Inpaint
+
+> **[⬇ Download workflow JSON](examples/WF_Inpaint_aioli-nodes.json)**
+
+A complete, ready-to-use inpaint workflow for **Flux2Klein** (9B), packaged as a ComfyUI subgraph (`FLUX2KLEIN_INPAINT`).
+
+**Required models**
+| Role | File |
+|------|------|
+| UNet | `flux2/flux-2-klein-9b-fp8.safetensors` |
+| VAE | `flux2/flux2-vae.safetensors` |
+| Text encoder | `qwen_3_8b_fp8mixed.safetensors` |
+
+**Required custom nodes**
+- **Aioli Nodes** (this repo) — `BBoxMultipleFix`
+- **ComfyUI Essentials** — `MaskBoundingBox+`, `ImageResize+`
+- **ComfyUI KJNodes** — `GrowMaskWithBlur`
+- **rgthree-comfy** — `Image Comparer` (optional, for before/after preview)
+
+**Subgraph inputs**
+| Input | Description |
+|-------|-------------|
+| IMAGE | Source image (with painted mask) |
+| MASK | Inpaint mask |
+| Resize_Megapixels | Working resolution in megapixels (default: 4) |
+| PROMPT | Inpaint prompt |
+| Resize_Inpaint_Target | BBox target size (`none` · `512` · `768` · `1024` · `1536` · `2048`) |
+
+**Internal pipeline**
+```
+LoadImageOutput (with mask painter)
+  └→ FLUX2KLEIN_INPAINT subgraph
+        ├── ImageScaleToTotalPixels   (resize source to working MP)
+        ├── MaskBoundingBox+          (detect mask region)
+        ├── BBoxMultipleFix           (crop + scale for Flux, cap 2048px)
+        ├── GrowMaskWithBlur          (soften mask edges)
+        ├── VAEEncode × 2 + SetLatentNoiseMask
+        ├── CLIPTextEncode → ReferenceLatent → FluxGuidance
+        ├── Flux2Scheduler + KSamplerSelect + RandomNoise
+        ├── SamplerCustomAdvanced
+        ├── VAEDecode
+        ├── ImageResize+              (resize back to orig_width × orig_height)
+        └── ImageCompositeMasked     (stitch result onto source)
+  └→ SaveImage + Image Comparer (before / after)
+```
+
+**Usage**
+1. Download the JSON and drag it into ComfyUI
+2. Point `LoadImageOutput` to your image and paint your mask
+3. Set your prompt and target resolution in the subgraph inputs
+4. Run — the result is composited pixel-perfectly back onto the source image
