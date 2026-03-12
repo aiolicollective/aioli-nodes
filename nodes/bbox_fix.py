@@ -103,7 +103,6 @@ class BBoxMultipleFix:
                 scale = MAX_SIDE / max(new_w, new_h)
                 up_w = max(mult, math.floor(new_w * scale / mult) * mult)
                 up_h = max(mult, math.floor(new_h * scale / mult) * mult)
-                print(f"[BBoxMultipleFix] downscale: {new_w}x{new_h} → {up_w}x{up_h} (max {MAX_SIDE}px/côté)")
             else:
                 up_w = new_w
                 up_h = new_h
