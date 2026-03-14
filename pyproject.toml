@@ -1,7 +1,7 @@
 [project]
 name = "aioli-nodes"
-version = "1.0.4"
-description = "Custom nodes for ComfyUI — Ratio Outpaint Calc and BBox Multiple Fix"
+version = "1.0.5"
+description = "Custom nodes for ComfyUI — Ratio Outpaint Calc, BBox Multiple Fix, Inpaint Color Fix (testing)"
 license = { file = "LICENSE" }
 
 [project.urls]
