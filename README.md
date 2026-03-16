@@ -1,6 +1,6 @@
 # Aioli Nodes — ComfyUI Custom Node Suite
 
-Two utility nodes for outpainting and inpainting in ComfyUI.
+Three utility nodes for outpainting and inpainting in ComfyUI.
 
 ## Installation
 
@@ -84,6 +84,7 @@ The node ensures the inpainted region stitches back **pixel-perfectly** onto the
 | orig_height | INT | Crop height BEFORE scale (use for resize-back after VAE Decode) |
 | width | INT | Final width (after scale) |
 | height | INT | Final height (after scale) |
+| target_size | INT | Target value as INT (0 if `none`) — connect directly to ImageResize+ |
 
 **Scaling behaviour**
 
@@ -103,8 +104,57 @@ BBox Fix → VAE Encode → KSampler → VAE Decode → ImageCompositeMasked ←
 BBox Fix → VAE Encode → KSampler → VAE Decode
   ↓ orig_width, orig_height              ↓
   ↓ x, y        → ImageResize+ ←────────┘
-                       ↓
+       ↑ target_size
                ImageCompositeMasked ← x, y
+```
+
+---
+
+## 🎨 Inpaint Color Fix
+
+Plugs in right after **VAE Decode**, before `ImageResize+` / `ImageCompositeMasked`.
+
+Corrects colorimetric drift introduced by the generation — selectively applies a LAB color match only on pixels that haven't significantly changed (similar zone), leaving the truly creative pixels untouched.
+
+**Inputs**
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| original_crop | IMAGE | `image_cropped` from BBoxMultipleFix (before KSampler) |
+| inpainted_crop | IMAGE | IMAGE from VAE Decode |
+| delta_e_threshold | FLOAT | Similarity threshold (-1 = auto). Below = corrected, above = creative/intact |
+| blend_strength | FLOAT | Color match strength on similar zones (0 = none, 1 = full) |
+| feather_radius | INT | Gaussian blur radius on the correction mask (0 = disabled) |
+| mask *(optional)* | MASK | Override mode: bypasses Delta-E, the mask drives correction directly |
+
+**Outputs**
+| Output | Type | Description |
+|--------|------|-------------|
+| image_corrected | IMAGE | Color-corrected crop — connect to ImageResize+ |
+| correction_mask | MASK | Debug mask (white = corrected, black = creative/intact) |
+
+**Modes**
+
+| Mode | Behaviour |
+|------|-----------|
+| No mask connected | Delta-E auto-detects similar vs creative pixels |
+| Mask connected | Delta-E is bypassed — the mask controls correction directly |
+
+**Delta-E threshold guide**
+
+| Value | Effect |
+|-------|--------|
+| `-1` (auto) | Recommended starting point |
+| `5–10` | Strict — corrects almost everything except highly creative pixels |
+| `15–20` | Balanced — fixes subtle drift, preserves real changes |
+| `25–35` | Loose — only corrects near-identical pixels |
+| `50+` | Near-global color match |
+
+**Position in workflow**
+```
+BBoxMultipleFix
+  └── image_cropped ──────────────────────────────────┐
+                                                       ↓
+  └── image_cropped → KSampler → VAEDecode → 🎨 InpaintColorFix → ImageResize+ → ImageCompositeMasked
 ```
 
 ---
@@ -123,7 +173,7 @@ A complete, ready-to-use inpaint workflow for **Flux2Klein** (9B), packaged as a
 | Text encoder | `qwen_3_8b_fp8mixed.safetensors` |
 
 **Required custom nodes**
-- **Aioli Nodes** (this repo) — `BBoxMultipleFix`
+- **Aioli Nodes** (this repo) — `BBoxMultipleFix`, `InpaintColorFix`
 - **ComfyUI Essentials** — `MaskBoundingBox+`, `ImageResize+`
 - **ComfyUI KJNodes** — `GrowMaskWithBlur`
 - **rgthree-comfy** — `Image Comparer` (optional, for before/after preview)
@@ -150,6 +200,7 @@ LoadImageOutput (with mask painter)
         ├── Flux2Scheduler + KSamplerSelect + RandomNoise
         ├── SamplerCustomAdvanced
         ├── VAEDecode
+        ├── InpaintColorFix           (selective LAB color match)
         ├── ImageResize+              (resize back to orig_width × orig_height)
         └── ImageCompositeMasked     (stitch result onto source)
   └→ SaveImage + Image Comparer (before / after)
