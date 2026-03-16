@@ -41,6 +41,7 @@ class BBoxMultipleFix:
       orig_width / orig_height      → dimensions crop DANS la source
                                       (pour resize retour après VAE Decode)
       width / height                → dimensions finales (après scale)
+      target_size                   → valeur INT du target choisi (0 si "none")
     """
 
     @classmethod
@@ -58,11 +59,12 @@ class BBoxMultipleFix:
             }
         }
 
-    RETURN_TYPES  = ("IMAGE", "MASK", "INT", "INT", "INT", "INT", "INT", "INT")
+    RETURN_TYPES  = ("IMAGE", "MASK", "INT", "INT", "INT", "INT", "INT", "INT", "INT")
     RETURN_NAMES  = ("image_cropped", "mask_cropped",
                      "x", "y",
                      "orig_width", "orig_height",
-                     "width", "height")
+                     "width", "height",
+                     "target_size")
     FUNCTION      = "fix"
     CATEGORY      = "Aioli Nodes"
 
@@ -102,10 +104,6 @@ class BBoxMultipleFix:
             new_h = math.ceil(height / mult) * mult
 
             # Si le crop dépasse MAX_SIDE : downscale en préservant le ratio exact.
-            # Symétrique à l'upscale :
-            #   1. Calcule la cible downscale (multiple de mult, ≤ MAX_SIDE)
-            #   2. Extrait le ratio irréductible a/b de cette cible
-            #   3. Ajuste new_w/new_h = a*k × b*k le plus proche → ratio identique
             if new_w > MAX_SIDE or new_h > MAX_SIDE:
                 if new_w >= new_h:
                     down_w = MAX_SIDE
@@ -160,7 +158,10 @@ class BBoxMultipleFix:
         else:
             final_w, final_h = orig_w, orig_h
 
-        return (img_cropped, mask_cropped, new_x, new_y, orig_w, orig_h, final_w, final_h)
+        # target_size : valeur INT du target choisi (0 si "none")
+        target_size = 0 if target == "none" else int(target)
+
+        return (img_cropped, mask_cropped, new_x, new_y, orig_w, orig_h, final_w, final_h, target_size)
 
     def _resize(self, tensor, new_W, new_H, mode):
         frames = []
