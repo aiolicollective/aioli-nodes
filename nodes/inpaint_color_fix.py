@@ -1,9 +1,7 @@
 import math
 import torch
+import torch.nn.functional as F
 import numpy as np
-
-
-COLOR_MATCH_MODES = ["mean_std", "histogram"]
 
 
 class InpaintColorFix:
@@ -13,18 +11,22 @@ class InpaintColorFix:
     Compare original_crop (avant KSampler) et inpainted_crop (après VAE Decode)
     en espace LAB pixel par pixel via Delta-E.
 
-    - Pixels similaires (Delta-E < threshold) : color match appliqué
+    - Pixels similaires (Delta-E < threshold) : color match appliqué (mean_std LAB)
       pour corriger la dérive colorimétrique introduite par la génération.
     - Pixels créatifs   (Delta-E > threshold) : inpainted intact, pas de correction.
 
-    Le masque de correction est exposé en sortie pour debug.
+    feather_radius : gaussian blur (pure torch) du masque de correction
+                     pour une transition douce entre zones corrigées/créatives.
+    mask (optionnel) : masque externe (ex: GrowMaskWithBlur) qui contraint
+                       spatialement la correction — multiplié au masque Delta-E.
 
     Entrées :
-      original_crop   → image_cropped depuis BBoxMultipleFix
-      inpainted_crop  → IMAGE depuis VAE Decode
-      delta_e_threshold → seuil de détection créatif/similaire (-1 = auto)
-      blend_strength  → force du color match sur zones similaires (0=aucun, 1=total)
-      color_match_mode → mean_std ou histogram
+      original_crop     → image_cropped depuis BBoxMultipleFix
+      inpainted_crop    → IMAGE depuis VAE Decode
+      delta_e_threshold → seuil créatif/similaire (-1 = auto)
+      blend_strength    → force du color match (0=aucun, 1=total)
+      feather_radius    → rayon du blur du masque de correction (0=désactivé)
+      mask (opt.)       → MASK externe pour contraindre la zone de correction
 
     Sorties :
       image_corrected  → crop corrigé à brancher sur ImageResize+
@@ -43,8 +45,13 @@ class InpaintColorFix:
                 "blend_strength":    ("FLOAT", {
                     "default": 1.0,  "min": 0.0,  "max": 1.0,   "step": 0.05,
                 }),
-                "color_match_mode":  (COLOR_MATCH_MODES,),
-            }
+                "feather_radius":    ("INT", {
+                    "default": 0,    "min": 0,     "max": 64,    "step": 1,
+                }),
+            },
+            "optional": {
+                "mask": ("MASK",),
+            },
         }
 
     RETURN_TYPES  = ("IMAGE", "MASK")
@@ -86,10 +93,11 @@ class InpaintColorFix:
         fz = fy - lab[..., 2] / 200
 
         eps = 6 / 29
+        fxyz = np.stack([fx, fy, fz], axis=-1)
         xyz = np.where(
-            np.stack([fx, fy, fz], axis=-1) > eps,
-            np.stack([fx, fy, fz], axis=-1) ** 3,
-            3 * (6 / 29) ** 2 * (np.stack([fx, fy, fz], axis=-1) - 4 / 29),
+            fxyz > eps,
+            fxyz ** 3,
+            3 * (6 / 29) ** 2 * (fxyz - 4 / 29),
         ).astype(np.float32)
         xyz *= np.array([0.95047, 1.00000, 1.08883], dtype=np.float32)
 
@@ -107,67 +115,46 @@ class InpaintColorFix:
         return np.clip(rgb, 0, 1).astype(np.float32)
 
     # ------------------------------------------------------------------
-    # Color match helpers
+    # Gaussian blur du masque (pure torch, zero dépendance externe)
+    # ------------------------------------------------------------------
+
+    def _feather_mask(self, mask: np.ndarray, radius: int) -> np.ndarray:
+        """Gaussian blur du masque binaire via torch.nn.functional.conv2d."""
+        if radius <= 0:
+            return mask
+
+        sigma  = radius / 2.0
+        size   = radius * 2 + 1
+        coords = torch.arange(size, dtype=torch.float32) - radius
+        gauss  = torch.exp(-coords ** 2 / (2 * sigma ** 2))
+        kernel = gauss.unsqueeze(0) * gauss.unsqueeze(1)
+        kernel = kernel / kernel.sum()
+        kernel = kernel.unsqueeze(0).unsqueeze(0)   # [1,1,k,k]
+
+        t = torch.from_numpy(mask).unsqueeze(0).unsqueeze(0)  # [1,1,H,W]
+        blurred = F.conv2d(t, kernel, padding=radius)
+        return blurred.squeeze().numpy()
+
+    # ------------------------------------------------------------------
+    # Color match mean_std pondéré (LAB)
     # ------------------------------------------------------------------
 
     def _match_mean_std(self, src_lab: np.ndarray, ref_lab: np.ndarray,
                         weight: np.ndarray) -> np.ndarray:
-        """
-        Recale mean/std de src vers ref canal par canal (L, a, b),
-        pondéré par weight (float32 [H,W], valeurs 0-1 = zones à corriger).
-        """
+        """Recale mean/std de src vers ref, canal par canal, pondéré par weight."""
         result = src_lab.copy()
         for c in range(3):
-            s = src_lab[..., c]
-            r = ref_lab[..., c]
-            w = weight
-            ws = w.sum() + 1e-8
+            s  = src_lab[..., c]
+            r  = ref_lab[..., c]
+            ws = weight.sum() + 1e-8
 
-            s_mean = (s * w).sum() / ws
-            r_mean = (r * w).sum() / ws
-            s_std  = math.sqrt(((s - s_mean) ** 2 * w).sum() / ws + 1e-8)
-            r_std  = math.sqrt(((r - r_mean) ** 2 * w).sum() / ws + 1e-8)
+            s_mean = (s * weight).sum() / ws
+            r_mean = (r * weight).sum() / ws
+            s_std  = math.sqrt(((s - s_mean) ** 2 * weight).sum() / ws + 1e-8)
+            r_std  = math.sqrt(((r - r_mean) ** 2 * weight).sum() / ws + 1e-8)
 
-            scale = r_std / (s_std + 1e-8)
-            corrected = (s - s_mean) * scale + r_mean
-            result[..., c] = corrected
-        return result
-
-    def _match_histogram(self, src_lab: np.ndarray, ref_lab: np.ndarray,
-                         weight: np.ndarray) -> np.ndarray:
-        """
-        Histogram matching canal par canal, pondéré par weight.
-        Pour chaque canal, on construit les CDFs sur les pixels similaires
-        et on mappe src → ref.
-        """
-        result = src_lab.copy()
-        bins = 256
-        for c in range(3):
-            s = src_lab[..., c].ravel()
-            r = ref_lab[..., c].ravel()
-            w = weight.ravel()
-
-            vmin = min(s.min(), r.min())
-            vmax = max(s.max(), r.max()) + 1e-6
-
-            # CDF source pondérée
-            s_hist, edges = np.histogram(s, bins=bins, range=(vmin, vmax), weights=w)
-            s_cdf = np.cumsum(s_hist).astype(np.float32)
-            s_cdf /= (s_cdf[-1] + 1e-8)
-
-            # CDF référence pondérée
-            r_hist, _ = np.histogram(r, bins=bins, range=(vmin, vmax), weights=w)
-            r_cdf = np.cumsum(r_hist).astype(np.float32)
-            r_cdf /= (r_cdf[-1] + 1e-8)
-
-            # Mapping s → r via CDFs
-            bin_centers = (edges[:-1] + edges[1:]) / 2
-            s_idx = np.searchsorted(s_cdf, np.clip(
-                np.interp(s, bin_centers, s_cdf), 0, 1 - 1e-8
-            ))
-            s_idx = np.clip(s_idx, 0, bins - 1)
-            corrected = bin_centers[s_idx]
-            result[..., c] = corrected.reshape(src_lab.shape[:2])
+            scale  = r_std / (s_std + 1e-8)
+            result[..., c] = (s - s_mean) * scale + r_mean
         return result
 
     # ------------------------------------------------------------------
@@ -175,16 +162,17 @@ class InpaintColorFix:
     # ------------------------------------------------------------------
 
     def fix(self, original_crop, inpainted_crop,
-            delta_e_threshold, blend_strength, color_match_mode):
+            delta_e_threshold, blend_strength, feather_radius,
+            mask=None):
 
-        orig_np = original_crop[0].cpu().float().numpy()     # [H,W,3] 0-1
-        inp_np  = inpainted_crop[0].cpu().float().numpy()    # [H,W,3] 0-1
+        orig_np = original_crop[0].cpu().float().numpy()   # [H,W,3] 0-1
+        inp_np  = inpainted_crop[0].cpu().float().numpy()  # [H,W,3] 0-1
 
         # Assure même taille (au cas où)
         if orig_np.shape != inp_np.shape:
             from PIL import Image
             H, W = inp_np.shape[:2]
-            pil = Image.fromarray((orig_np * 255).astype(np.uint8))
+            pil     = Image.fromarray((orig_np * 255).astype(np.uint8))
             orig_np = np.array(pil.resize((W, H), Image.LANCZOS)).astype(np.float32) / 255.0
 
         H, W = orig_np.shape[:2]
@@ -193,48 +181,54 @@ class InpaintColorFix:
         orig_lab = self._rgb_to_lab(orig_np)
         inp_lab  = self._rgb_to_lab(inp_np)
 
-        # Delta-E perceptuel (distance euclidienne en LAB)
-        diff = orig_lab - inp_lab
-        diff[..., 0] *= 0.7   # pondère légèrement L vs chrominance
-        delta_e = np.sqrt((diff ** 2).sum(axis=-1))   # [H,W]
+        # Delta-E perceptuel (distance euclidienne LAB, L pondéré 0.7)
+        diff        = orig_lab - inp_lab
+        diff[..., 0] *= 0.7
+        delta_e     = np.sqrt((diff ** 2).sum(axis=-1))   # [H,W]
 
         # Seuil auto si -1
         if delta_e_threshold < 0:
-            p50 = float(np.percentile(delta_e, 50))
-            p75 = float(np.percentile(delta_e, 75))
-            threshold = p75 + (p75 - p50) * 0.5
-            threshold = float(np.clip(threshold, 4.0, 60.0))
-            print(f"[InpaintColorFix] auto threshold : {threshold:.1f} "
-                  f"(p50={p50:.1f} p75={p75:.1f})")
+            p50       = float(np.percentile(delta_e, 50))
+            p75       = float(np.percentile(delta_e, 75))
+            threshold = float(np.clip(p75 + (p75 - p50) * 0.5, 4.0, 60.0))
+            print(f"[InpaintColorFix] auto threshold : {threshold:.1f}  "
+                  f"(p50={p50:.1f}  p75={p75:.1f})")
         else:
             threshold = delta_e_threshold
 
-        # Masque de correction : 1 = similaire (à corriger), 0 = créatif (intact)
+        # Masque binaire : 1 = similaire (à corriger), 0 = créatif (intact)
         similar_mask = (delta_e <= threshold).astype(np.float32)   # [H,W]
+
+        # Feathering interne (gaussian blur via torch)
+        similar_mask = self._feather_mask(similar_mask, feather_radius)
+
+        # Masque externe optionnel → contrainte spatiale (multiplication)
+        if mask is not None:
+            ext_mask = mask[0].cpu().float().numpy()   # [H,W]
+            if ext_mask.shape != (H, W):
+                from PIL import Image
+                pil_m    = Image.fromarray((ext_mask * 255).astype(np.uint8))
+                ext_mask = np.array(pil_m.resize((W, H), Image.LANCZOS)).astype(np.float32) / 255.0
+            similar_mask = similar_mask * ext_mask
 
         changed_pct = 100.0 * (similar_mask < 0.5).sum() / (H * W)
         print(f"[InpaintColorFix] threshold={threshold:.1f}  "
-              f"creative={changed_pct:.1f}%  similar={100-changed_pct:.1f}%")
+              f"creative={changed_pct:.1f}%  similar={100-changed_pct:.1f}%  "
+              f"feather={feather_radius}px")
 
-        # Color match sur les pixels similaires
-        if color_match_mode == "mean_std":
-            corrected_lab = self._match_mean_std(inp_lab, orig_lab, similar_mask)
-        else:
-            corrected_lab = self._match_histogram(inp_lab, orig_lab, similar_mask)
+        # Color match mean_std pondéré sur les zones similaires
+        corrected_lab = self._match_mean_std(inp_lab, orig_lab, similar_mask)
 
-        # Blend : blend_strength contrôle la force de la correction
-        blended_lab = inp_lab + similar_mask[..., np.newaxis] * blend_strength * (corrected_lab - inp_lab)
-
-        # Pixels créatifs → inpainted intact
-        creative_mask = (1.0 - similar_mask)[..., np.newaxis]
-        final_lab = blended_lab * (1.0 - creative_mask) + inp_lab * creative_mask
+        # Blend pondéré par le masque (feathered) × blend_strength
+        weight3       = (similar_mask * blend_strength)[..., np.newaxis]
+        final_lab     = inp_lab + weight3 * (corrected_lab - inp_lab)
 
         # Retour RGB
         result = self._lab_to_rgb(final_lab)
 
-        # Correction mask pour debug (blanc = corrigé)
+        # Correction mask pour debug
         corr_mask_out = torch.from_numpy(
-            (similar_mask * blend_strength).astype(np.float32)
+            np.clip(similar_mask * blend_strength, 0, 1).astype(np.float32)
         ).unsqueeze(0)   # [1,H,W]
 
         return (
