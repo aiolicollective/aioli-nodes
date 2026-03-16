@@ -8,25 +8,26 @@ class InpaintColorFix:
     """
     S'insère après VAE Decode, avant ImageResize+ / ImageCompositeMasked.
 
-    Compare original_crop (avant KSampler) et inpainted_crop (après VAE Decode)
-    en espace LAB pixel par pixel via Delta-E.
+    Sans mask externe :
+      Compare original_crop et inpainted_crop en espace LAB via Delta-E.
+      Pixels similaires (Delta-E < threshold) → color match appliqué.
+      Pixels créatifs   (Delta-E > threshold) → inpainted intact.
 
-    - Pixels similaires (Delta-E < threshold) : color match appliqué (mean_std LAB)
-      pour corriger la dérive colorimétrique introduite par la génération.
-    - Pixels créatifs   (Delta-E > threshold) : inpainted intact, pas de correction.
+    Avec mask externe (override) :
+      Le Delta-E est ignoré. Le masque fourni pilote directement la correction.
+      Blanc = color match appliqué / Noir = inpainted intact.
+      Utile pour piloter manuellement la zone de correction.
 
-    feather_radius : gaussian blur (pure torch) du masque de correction
-                     pour une transition douce entre zones corrigées/créatives.
-    mask (optionnel) : masque externe (ex: GrowMaskWithBlur) qui contraint
-                       spatialement la correction — multiplié au masque Delta-E.
+    feather_radius : gaussian blur (pure torch) du masque actif —
+                     transition douce entre zones corrigées/intactes.
 
     Entrées :
       original_crop     → image_cropped depuis BBoxMultipleFix
       inpainted_crop    → IMAGE depuis VAE Decode
-      delta_e_threshold → seuil créatif/similaire (-1 = auto)
+      delta_e_threshold → seuil créatif/similaire (-1 = auto) — ignoré si mask branché
       blend_strength    → force du color match (0=aucun, 1=total)
-      feather_radius    → rayon du blur du masque de correction (0=désactivé)
-      mask (opt.)       → MASK externe pour contraindre la zone de correction
+      feather_radius    → rayon du blur du masque actif (0=désactivé)
+      mask (opt.)       → MASK override : bypass Delta-E, contrôle direct
 
     Sorties :
       image_corrected  → crop corrigé à brancher sur ImageResize+
@@ -92,9 +93,9 @@ class InpaintColorFix:
         fx = lab[..., 1] / 500 + fy
         fz = fy - lab[..., 2] / 200
 
-        eps = 6 / 29
+        eps  = 6 / 29
         fxyz = np.stack([fx, fy, fz], axis=-1)
-        xyz = np.where(
+        xyz  = np.where(
             fxyz > eps,
             fxyz ** 3,
             3 * (6 / 29) ** 2 * (fxyz - 4 / 29),
@@ -115,11 +116,11 @@ class InpaintColorFix:
         return np.clip(rgb, 0, 1).astype(np.float32)
 
     # ------------------------------------------------------------------
-    # Gaussian blur du masque (pure torch, zero dépendance externe)
+    # Gaussian blur du masque (pure torch, zéro dépendance externe)
     # ------------------------------------------------------------------
 
     def _feather_mask(self, mask: np.ndarray, radius: int) -> np.ndarray:
-        """Gaussian blur du masque binaire via torch.nn.functional.conv2d."""
+        """Gaussian blur du masque via torch.nn.functional.conv2d."""
         if radius <= 0:
             return mask
 
@@ -132,8 +133,7 @@ class InpaintColorFix:
         kernel = kernel.unsqueeze(0).unsqueeze(0)   # [1,1,k,k]
 
         t = torch.from_numpy(mask).unsqueeze(0).unsqueeze(0)  # [1,1,H,W]
-        blurred = F.conv2d(t, kernel, padding=radius)
-        return blurred.squeeze().numpy()
+        return F.conv2d(t, kernel, padding=radius).squeeze().numpy()
 
     # ------------------------------------------------------------------
     # Color match mean_std pondéré (LAB)
@@ -171,65 +171,73 @@ class InpaintColorFix:
         # Assure même taille (au cas où)
         if orig_np.shape != inp_np.shape:
             from PIL import Image
-            H, W = inp_np.shape[:2]
+            H, W    = inp_np.shape[:2]
             pil     = Image.fromarray((orig_np * 255).astype(np.uint8))
             orig_np = np.array(pil.resize((W, H), Image.LANCZOS)).astype(np.float32) / 255.0
 
         H, W = orig_np.shape[:2]
 
-        # Conversion LAB
+        # ------------------------------------------------------------------
+        # Masque actif : override (mask branché) ou Delta-E auto
+        # ------------------------------------------------------------------
+        if mask is not None:
+            # OVERRIDE : le masque externe pilote directement la correction
+            active_mask = mask[0].cpu().float().numpy()   # [H,W]
+            if active_mask.shape != (H, W):
+                from PIL import Image
+                pil_m       = Image.fromarray((active_mask * 255).astype(np.uint8))
+                active_mask = np.array(pil_m.resize((W, H), Image.LANCZOS)).astype(np.float32) / 255.0
+            print(f"[InpaintColorFix] mode=mask_override  feather={feather_radius}px")
+        else:
+            # Delta-E : calcul de la similarité colorimétrique
+            orig_lab = self._rgb_to_lab(orig_np)
+            inp_lab  = self._rgb_to_lab(inp_np)
+            diff     = orig_lab - inp_np  # Note: comparaison sur inp_lab calculé ci-dessous
+            # correction : recalcul propre
+            inp_lab_ = self._rgb_to_lab(inp_np)
+            diff     = orig_lab - inp_lab_
+            diff[..., 0] *= 0.7
+            delta_e  = np.sqrt((diff ** 2).sum(axis=-1))
+
+            if delta_e_threshold < 0:
+                p50       = float(np.percentile(delta_e, 50))
+                p75       = float(np.percentile(delta_e, 75))
+                threshold = float(np.clip(p75 + (p75 - p50) * 0.5, 4.0, 60.0))
+                print(f"[InpaintColorFix] mode=delta_e  auto threshold={threshold:.1f}  "
+                      f"(p50={p50:.1f}  p75={p75:.1f})  feather={feather_radius}px")
+            else:
+                threshold = delta_e_threshold
+                print(f"[InpaintColorFix] mode=delta_e  threshold={threshold:.1f}  "
+                      f"feather={feather_radius}px")
+
+            active_mask = (delta_e <= threshold).astype(np.float32)
+
+        # Feathering du masque actif (gaussian blur pure torch)
+        active_mask = self._feather_mask(active_mask, feather_radius)
+        active_mask = np.clip(active_mask, 0.0, 1.0)
+
+        changed_pct = 100.0 * (active_mask < 0.5).sum() / (H * W)
+        print(f"[InpaintColorFix] corrected={100-changed_pct:.1f}%  "
+              f"untouched={changed_pct:.1f}%")
+
+        # Conversion LAB pour le color match
         orig_lab = self._rgb_to_lab(orig_np)
         inp_lab  = self._rgb_to_lab(inp_np)
 
-        # Delta-E perceptuel (distance euclidienne LAB, L pondéré 0.7)
-        diff        = orig_lab - inp_lab
-        diff[..., 0] *= 0.7
-        delta_e     = np.sqrt((diff ** 2).sum(axis=-1))   # [H,W]
+        # Color match mean_std pondéré par le masque actif
+        corrected_lab = self._match_mean_std(inp_lab, orig_lab, active_mask)
 
-        # Seuil auto si -1
-        if delta_e_threshold < 0:
-            p50       = float(np.percentile(delta_e, 50))
-            p75       = float(np.percentile(delta_e, 75))
-            threshold = float(np.clip(p75 + (p75 - p50) * 0.5, 4.0, 60.0))
-            print(f"[InpaintColorFix] auto threshold : {threshold:.1f}  "
-                  f"(p50={p50:.1f}  p75={p75:.1f})")
-        else:
-            threshold = delta_e_threshold
-
-        # Masque binaire : 1 = similaire (à corriger), 0 = créatif (intact)
-        similar_mask = (delta_e <= threshold).astype(np.float32)   # [H,W]
-
-        # Feathering interne (gaussian blur via torch)
-        similar_mask = self._feather_mask(similar_mask, feather_radius)
-
-        # Masque externe optionnel → contrainte spatiale (multiplication)
-        if mask is not None:
-            ext_mask = mask[0].cpu().float().numpy()   # [H,W]
-            if ext_mask.shape != (H, W):
-                from PIL import Image
-                pil_m    = Image.fromarray((ext_mask * 255).astype(np.uint8))
-                ext_mask = np.array(pil_m.resize((W, H), Image.LANCZOS)).astype(np.float32) / 255.0
-            similar_mask = similar_mask * ext_mask
-
-        changed_pct = 100.0 * (similar_mask < 0.5).sum() / (H * W)
-        print(f"[InpaintColorFix] threshold={threshold:.1f}  "
-              f"creative={changed_pct:.1f}%  similar={100-changed_pct:.1f}%  "
-              f"feather={feather_radius}px")
-
-        # Color match mean_std pondéré sur les zones similaires
-        corrected_lab = self._match_mean_std(inp_lab, orig_lab, similar_mask)
-
-        # Blend pondéré par le masque (feathered) × blend_strength
-        weight3       = (similar_mask * blend_strength)[..., np.newaxis]
-        final_lab     = inp_lab + weight3 * (corrected_lab - inp_lab)
+        # Blend final pondéré par masque × blend_strength
+        weight3   = (active_mask * blend_strength)[..., np.newaxis]
+        final_lab = inp_lab + weight3 * (corrected_lab - inp_lab)
 
         # Retour RGB
         result = self._lab_to_rgb(final_lab)
 
         # Correction mask pour debug
         corr_mask_out = torch.from_numpy(
-            np.clip(similar_mask * blend_strength, 0, 1).astype(np.float32)
-        ).unsqueeze(0)   # [1,H,W]
+            np.clip(active_mask * blend_strength, 0, 1).astype(np.float32)
+        ).unsqueeze(0)
 
         return (
             torch.from_numpy(result).unsqueeze(0),
