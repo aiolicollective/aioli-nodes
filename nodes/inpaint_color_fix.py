@@ -16,7 +16,6 @@ class InpaintColorFix:
     Avec mask externe (override) :
       Le Delta-E est ignoré. Le masque fourni pilote directement la correction.
       Blanc = color match appliqué / Noir = inpainted intact.
-      Utile pour piloter manuellement la zone de correction.
 
     feather_radius : gaussian blur (pure torch) du masque actif —
                      transition douce entre zones corrigées/intactes.
@@ -81,18 +80,17 @@ class InpaintColorFix:
 
         eps = (6 / 29) ** 3
         kap = 1 / (3 * (6 / 29) ** 2)
-        f = np.where(xyz > eps, np.cbrt(xyz), kap * xyz + 4 / 29)
-        L = 116 * f[..., 1] - 16
-        a = 500 * (f[..., 0] - f[..., 1])
-        b = 200 * (f[..., 1] - f[..., 2])
+        f   = np.where(xyz > eps, np.cbrt(xyz), kap * xyz + 4 / 29)
+        L   = 116 * f[..., 1] - 16
+        a   = 500 * (f[..., 0] - f[..., 1])
+        b   = 200 * (f[..., 1] - f[..., 2])
         return np.stack([L, a, b], axis=-1).astype(np.float32)
 
     def _lab_to_rgb(self, lab: np.ndarray) -> np.ndarray:
         """LAB float32 [H,W,3]  →  rgb float32 [H,W,3] 0-1"""
-        fy = (lab[..., 0] + 16) / 116
-        fx = lab[..., 1] / 500 + fy
-        fz = fy - lab[..., 2] / 200
-
+        fy   = (lab[..., 0] + 16) / 116
+        fx   = lab[..., 1] / 500 + fy
+        fz   = fy - lab[..., 2] / 200
         eps  = 6 / 29
         fxyz = np.stack([fx, fy, fz], axis=-1)
         xyz  = np.where(
@@ -123,16 +121,13 @@ class InpaintColorFix:
         """Gaussian blur du masque via torch.nn.functional.conv2d."""
         if radius <= 0:
             return mask
-
         sigma  = radius / 2.0
         size   = radius * 2 + 1
         coords = torch.arange(size, dtype=torch.float32) - radius
         gauss  = torch.exp(-coords ** 2 / (2 * sigma ** 2))
         kernel = gauss.unsqueeze(0) * gauss.unsqueeze(1)
-        kernel = kernel / kernel.sum()
-        kernel = kernel.unsqueeze(0).unsqueeze(0)   # [1,1,k,k]
-
-        t = torch.from_numpy(mask).unsqueeze(0).unsqueeze(0)  # [1,1,H,W]
+        kernel = (kernel / kernel.sum()).unsqueeze(0).unsqueeze(0)  # [1,1,k,k]
+        t      = torch.from_numpy(mask).unsqueeze(0).unsqueeze(0)  # [1,1,H,W]
         return F.conv2d(t, kernel, padding=radius).squeeze().numpy()
 
     # ------------------------------------------------------------------
@@ -147,14 +142,11 @@ class InpaintColorFix:
             s  = src_lab[..., c]
             r  = ref_lab[..., c]
             ws = weight.sum() + 1e-8
-
             s_mean = (s * weight).sum() / ws
             r_mean = (r * weight).sum() / ws
             s_std  = math.sqrt(((s - s_mean) ** 2 * weight).sum() / ws + 1e-8)
             r_std  = math.sqrt(((r - r_mean) ** 2 * weight).sum() / ws + 1e-8)
-
-            scale  = r_std / (s_std + 1e-8)
-            result[..., c] = (s - s_mean) * scale + r_mean
+            result[..., c] = (s - s_mean) * (r_std / (s_std + 1e-8)) + r_mean
         return result
 
     # ------------------------------------------------------------------
@@ -168,35 +160,35 @@ class InpaintColorFix:
         orig_np = original_crop[0].cpu().float().numpy()   # [H,W,3] 0-1
         inp_np  = inpainted_crop[0].cpu().float().numpy()  # [H,W,3] 0-1
 
-        # Assure même taille (au cas où)
+        # Assure même taille
         if orig_np.shape != inp_np.shape:
             from PIL import Image
             H, W    = inp_np.shape[:2]
-            pil     = Image.fromarray((orig_np * 255).astype(np.uint8))
-            orig_np = np.array(pil.resize((W, H), Image.LANCZOS)).astype(np.float32) / 255.0
+            orig_np = np.array(
+                Image.fromarray((orig_np * 255).astype(np.uint8)).resize((W, H), Image.LANCZOS)
+            ).astype(np.float32) / 255.0
 
         H, W = orig_np.shape[:2]
 
         # ------------------------------------------------------------------
-        # Masque actif : override (mask branché) ou Delta-E auto
+        # Masque actif : override (mask branché) ou Delta-E
         # ------------------------------------------------------------------
         if mask is not None:
-            # OVERRIDE : le masque externe pilote directement la correction
-            active_mask = mask[0].cpu().float().numpy()   # [H,W]
+            # OVERRIDE — Delta-E ignoré, le masque externe commande
+            active_mask = mask[0].cpu().float().numpy()
             if active_mask.shape != (H, W):
                 from PIL import Image
-                pil_m       = Image.fromarray((active_mask * 255).astype(np.uint8))
-                active_mask = np.array(pil_m.resize((W, H), Image.LANCZOS)).astype(np.float32) / 255.0
+                active_mask = np.array(
+                    Image.fromarray((active_mask * 255).astype(np.uint8)).resize((W, H), Image.LANCZOS)
+                ).astype(np.float32) / 255.0
             print(f"[InpaintColorFix] mode=mask_override  feather={feather_radius}px")
+
         else:
-            # Delta-E : calcul de la similarité colorimétrique
+            # Delta-E — similarité colorimétrique LAB
             orig_lab = self._rgb_to_lab(orig_np)
             inp_lab  = self._rgb_to_lab(inp_np)
-            diff     = orig_lab - inp_np  # Note: comparaison sur inp_lab calculé ci-dessous
-            # correction : recalcul propre
-            inp_lab_ = self._rgb_to_lab(inp_np)
-            diff     = orig_lab - inp_lab_
-            diff[..., 0] *= 0.7
+            diff     = orig_lab - inp_lab
+            diff[..., 0] *= 0.7   # pondère L vs chrominance
             delta_e  = np.sqrt((diff ** 2).sum(axis=-1))
 
             if delta_e_threshold < 0:
@@ -213,28 +205,23 @@ class InpaintColorFix:
             active_mask = (delta_e <= threshold).astype(np.float32)
 
         # Feathering du masque actif (gaussian blur pure torch)
-        active_mask = self._feather_mask(active_mask, feather_radius)
-        active_mask = np.clip(active_mask, 0.0, 1.0)
+        active_mask = np.clip(self._feather_mask(active_mask, feather_radius), 0.0, 1.0)
 
-        changed_pct = 100.0 * (active_mask < 0.5).sum() / (H * W)
-        print(f"[InpaintColorFix] corrected={100-changed_pct:.1f}%  "
-              f"untouched={changed_pct:.1f}%")
+        corrected_pct = 100.0 * (active_mask >= 0.5).sum() / (H * W)
+        print(f"[InpaintColorFix] corrected={corrected_pct:.1f}%  "
+              f"untouched={100-corrected_pct:.1f}%")
 
-        # Conversion LAB pour le color match
+        # Color match mean_std en LAB
         orig_lab = self._rgb_to_lab(orig_np)
         inp_lab  = self._rgb_to_lab(inp_np)
-
-        # Color match mean_std pondéré par le masque actif
         corrected_lab = self._match_mean_std(inp_lab, orig_lab, active_mask)
 
         # Blend final pondéré par masque × blend_strength
         weight3   = (active_mask * blend_strength)[..., np.newaxis]
         final_lab = inp_lab + weight3 * (corrected_lab - inp_lab)
 
-        # Retour RGB
         result = self._lab_to_rgb(final_lab)
 
-        # Correction mask pour debug
         corr_mask_out = torch.from_numpy(
             np.clip(active_mask * blend_strength, 0, 1).astype(np.float32)
         ).unsqueeze(0)
