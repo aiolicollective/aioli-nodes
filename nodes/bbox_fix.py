@@ -4,10 +4,9 @@ import numpy as np
 from PIL import Image
 
 
-TARGET_SIZES  = ["none", "512", "768", "1024", "1536", "2048"]
-RATIO_OPTIONS = ["free", "1:1"]
+TARGET_SIZES = ["none", "512", "768", "1024", "1536", "2048"]
 
-# Hard cap for Flux / SDXL compatibility (max pixels on any side) — used only when target="none"
+# Hard cap for Flux / SDXL compatibility — used only in none mode when force_target_downscale=False
 MAX_SIDE = 2048
 
 
@@ -15,23 +14,24 @@ class BBoxMultipleFix:
     """
     S'insère après 'Mask Bounding Box' (ComfyUI Essentials).
 
-    crop_ratio (nouveau) :
-      "free" — comportement par défaut, ratio libre du bbox.
-      "1:1"  — force le crop à être carré (côté = max(width, height)),
-               en restant aligné sur le multiple choisi.
+    force_square (bool) :
+      False — comportement par défaut, ratio libre du bbox.
+      True  — force le crop à être carré (côté = max(width, height)),
+              en restant aligné sur le multiple choisi.
+
+    force_target_downscale (bool) :
+      False — comportement par défaut : si bbox > target, fallback cap MAX_SIDE.
+      True  — si bbox > target, downscale GCD vers le target (même algo que l'upscale).
+              Ignoré si target="none".
 
     Mode none (target="none") :
       Arrondit width/height au multiple choisi.
       Si le crop dépasse MAX_SIDE (2048) : downscale GCD vers MAX_SIDE.
 
-    Mode target (512/768/1024/1536/2048) — UNIFIÉ upscale ET downscale :
-      Le même algorithme GCD s'applique que le crop soit plus petit OU plus
-      grand que la target :
-        1. Calcule t_w × t_h (target × ?) en multiple de mult.
-        2. Extrait le ratio irréductible a/b.
-        3. Trouve new_w × new_h = a*k × b*k le plus proche du bbox.
-           → crop et target ont le MÊME ratio exact → pixel-perfect.
-        4. Resize Lanczos : crop → target (upscale ou downscale).
+    Mode target (512/768/1024/1536/2048) :
+      Upscale GCD vers target si bbox < target.
+      Si force_target_downscale=True et bbox > target : downscale GCD vers target.
+      Si force_target_downscale=False et bbox > target : cap MAX_SIDE (comportement historique).
 
     Sorties :
       image_cropped / mask_cropped  → VAE Encode (Inpaint)
@@ -45,15 +45,16 @@ class BBoxMultipleFix:
     def INPUT_TYPES(cls):
         return {
             "required": {
-                "image":      ("IMAGE",),
-                "mask":       ("MASK",),
-                "x":          ("INT", {"default": 0,  "min": 0, "max": 99999}),
-                "y":          ("INT", {"default": 0,  "min": 0, "max": 99999}),
-                "width":      ("INT", {"default": 64, "min": 1, "max": 99999}),
-                "height":     ("INT", {"default": 64, "min": 1, "max": 99999}),
-                "multiple":   (["8 (VAE minimum)", "32 (SD1.5)", "64 (SDXL / Flux)"],),
-                "target":     (TARGET_SIZES,  {"default": "none"}),
-                "crop_ratio": (RATIO_OPTIONS, {"default": "free"}),
+                "image":                  ("IMAGE",),
+                "mask":                   ("MASK",),
+                "x":                      ("INT", {"default": 0,  "min": 0, "max": 99999}),
+                "y":                      ("INT", {"default": 0,  "min": 0, "max": 99999}),
+                "width":                  ("INT", {"default": 64, "min": 1, "max": 99999}),
+                "height":                 ("INT", {"default": 64, "min": 1, "max": 99999}),
+                "multiple":               (["8 (VAE minimum)", "32 (SD1.5)", "64 (SDXL / Flux)"],),
+                "target":                 (TARGET_SIZES, {"default": "none"}),
+                "force_square":           ("BOOLEAN", {"default": False}),
+                "force_target_downscale": ("BOOLEAN", {"default": False}),
             }
         }
 
@@ -66,13 +67,14 @@ class BBoxMultipleFix:
     FUNCTION      = "fix"
     CATEGORY      = "Aioli Nodes"
 
-    def fix(self, image, mask, x, y, width, height, multiple, target, crop_ratio="free"):
+    def fix(self, image, mask, x, y, width, height, multiple, target,
+            force_square=False, force_target_downscale=False):
 
         mult = int(multiple.split(" ")[0])
         B, H_src, W_src, C = image.shape
 
-        # ── Step 1 : ratio forcé sur le bbox de base ─────────────────────────
-        if crop_ratio == "1:1":
+        # ── Step 1 : ratio forcé 1:1 si activé ───────────────────────────────
+        if force_square:
             base = max(width, height)
             base_w, base_h = base, base
         else:
@@ -94,17 +96,52 @@ class BBoxMultipleFix:
                 t_h = t
                 t_w = math.ceil((base_w * t / base_h) / mult) * mult
 
-            # GCD crop adjustment — MÊME logique pour upscale ET downscale
-            g    = math.gcd(t_w, t_h)
-            a, b = t_w // g, t_h // g
-            k    = round((base_w / a + base_h / b) / 2)
-            k    = max(1, k)
-            new_w, new_h = a * k, b * k
-            up_w, up_h   = t_w, t_h
-
-            if t_w != new_w or t_h != new_h:
+            if t_w > base_w and t_h > base_h:
+                # Upscale vers target (comportement historique)
+                g    = math.gcd(t_w, t_h)
+                a, b = t_w // g, t_h // g
+                k    = round((base_w / a + base_h / b) / 2)
+                k    = max(1, k)
+                new_w, new_h = a * k, b * k
+                up_w, up_h   = t_w, t_h
                 need_resize  = True
-                resize_label = "upscale " if t_w > new_w else "downscale"
+                resize_label = "upscale "
+
+            elif force_target_downscale:
+                # Downscale GCD vers target (nouveau comportement optionnel)
+                g    = math.gcd(t_w, t_h)
+                a, b = t_w // g, t_h // g
+                k    = round((base_w / a + base_h / b) / 2)
+                k    = max(1, k)
+                new_w, new_h = a * k, b * k
+                up_w, up_h   = t_w, t_h
+                need_resize  = True
+                resize_label = "downscale"
+
+            else:
+                # Fallback historique : arrondi au multiple + cap MAX_SIDE
+                print(f"[BBoxMultipleFix] target={t} ≤ bbox → fallback cap {MAX_SIDE}px")
+                new_w = math.ceil(base_w / mult) * mult
+                new_h = math.ceil(base_h / mult) * mult
+
+                if new_w > MAX_SIDE or new_h > MAX_SIDE:
+                    if new_w >= new_h:
+                        down_w = MAX_SIDE
+                        down_h = math.ceil((new_h * MAX_SIDE / new_w) / mult) * mult
+                    else:
+                        down_h = MAX_SIDE
+                        down_w = math.ceil((new_w * MAX_SIDE / new_h) / mult) * mult
+
+                    g    = math.gcd(down_w, down_h)
+                    a, b = down_w // g, down_h // g
+                    k    = round((new_w / a + new_h / b) / 2)
+                    k    = max(1, k)
+                    new_w, new_h = a * k, b * k
+                    up_w, up_h   = down_w, down_h
+                    need_resize  = True
+                    resize_label = "downscale"
+                else:
+                    up_w, up_h = new_w, new_h
 
         else:
             # Mode none : arrondi au multiple, cap MAX_SIDE si dépassement
@@ -112,7 +149,6 @@ class BBoxMultipleFix:
             new_h = math.ceil(base_h / mult) * mult
 
             if new_w > MAX_SIDE or new_h > MAX_SIDE:
-                # Downscale GCD vers MAX_SIDE (ratio exact préservé)
                 if new_w >= new_h:
                     down_w = MAX_SIDE
                     down_h = math.ceil((new_h * MAX_SIDE / new_w) / mult) * mult
@@ -132,11 +168,9 @@ class BBoxMultipleFix:
                 up_w, up_h = new_w, new_h
 
         # ── Step 3 : expansion symétrique autour du bbox original ─────────────
-        # On centre le crop (new_w × new_h) sur le bbox d'origine (x, y, width, height)
         new_x = x - (new_w - width)  // 2
         new_y = y - (new_h - height) // 2
 
-        # Clamp dans les bords de l'image source
         new_x = max(0, new_x)
         new_y = max(0, new_y)
         if new_x + new_w > W_src: new_x = W_src - new_w
@@ -148,8 +182,11 @@ class BBoxMultipleFix:
 
         orig_w, orig_h = new_w, new_h
 
-        ratio_info = f"  ratio={crop_ratio}" if crop_ratio != "free" else ""
-        print(f"[BBoxMultipleFix] bbox     : {width}x{height} @({x},{y}){ratio_info}")
+        flags = []
+        if force_square:           flags.append("square")
+        if force_target_downscale: flags.append("target_downscale")
+        flag_info = f"  [{', '.join(flags)}]" if flags else ""
+        print(f"[BBoxMultipleFix] bbox     : {width}x{height} @({x},{y}){flag_info}")
         print(f"[BBoxMultipleFix] crop     : {orig_w}x{orig_h} @({new_x},{new_y})")
 
         # ── Step 4 : crop ─────────────────────────────────────────────────────
@@ -158,7 +195,7 @@ class BBoxMultipleFix:
             mask = mask.unsqueeze(0)
         mask_cropped = mask[:, new_y:new_y + new_h, new_x:new_x + new_w]
 
-        # ── Step 5 : resize Lanczos si nécessaire ────────────────────────────
+        # ── Step 5 : resize Lanczos si nécessaire ─────────────────────────────
         if need_resize and (up_w != orig_w or up_h != orig_h):
             print(f"[BBoxMultipleFix] {resize_label} : {orig_w}x{orig_h} → {up_w}x{up_h}")
             img_cropped  = self._resize(img_cropped,  up_w, up_h, "image")
