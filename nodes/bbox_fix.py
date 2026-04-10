@@ -12,21 +12,21 @@ MAX_SIDE = 2048
 
 class BBoxMultipleFix:
     """
-    S'insère après 'Mask Bounding Box' (ComfyUI Essentials).
+    S'insere apres 'Mask Bounding Box' (ComfyUI Essentials).
 
     force_square (bool) :
-      False — comportement par défaut, ratio libre du bbox.
-      True  — force le crop à être carré (côté = max(width, height)),
-              en restant aligné sur le multiple choisi.
+      False — comportement par defaut, ratio libre du bbox.
+      True  — force le crop a etre carre (cote = max(width, height)),
+              en restant aligne sur le multiple choisi.
 
     force_target_downscale (bool) :
-      False — comportement par défaut : si bbox > target, fallback cap MAX_SIDE.
-      True  — si bbox > target, downscale GCD vers le target (même algo que l'upscale).
-              Ignoré si target="none".
+      False — comportement par defaut : si bbox > target, fallback cap MAX_SIDE.
+      True  — si bbox > target, downscale GCD vers le target (meme algo que l'upscale).
+              Ignore si target="none".
 
     Mode none (target="none") :
       Arrondit width/height au multiple choisi.
-      Si le crop dépasse MAX_SIDE (2048) : downscale GCD vers MAX_SIDE.
+      Si le crop depasse MAX_SIDE (2048) : downscale GCD vers MAX_SIDE.
 
     Mode target (512/768/1024/1536/2048) :
       Upscale GCD vers target si bbox < target.
@@ -34,11 +34,11 @@ class BBoxMultipleFix:
       Si force_target_downscale=False et bbox > target : cap MAX_SIDE (comportement historique).
 
     Sorties :
-      image_cropped / mask_cropped  → VAE Encode (Inpaint)
-      x / y                         → ImageCompositeMasked
-      orig_width / orig_height      → dimensions crop DANS la source
-      width / height                → dimensions finales (après resize)
-      target_size                   → valeur INT du target (0 si "none")
+      image_cropped / mask_cropped  -> VAE Encode (Inpaint)
+      x / y                         -> ImageCompositeMasked
+      orig_width / orig_height      -> dimensions crop DANS la source
+      width / height                -> dimensions finales (apres resize)
+      target_size                   -> valeur INT du target (0 si "none")
     """
 
     @classmethod
@@ -51,7 +51,7 @@ class BBoxMultipleFix:
                 "y":                      ("INT", {"default": 0,  "min": 0, "max": 99999}),
                 "width":                  ("INT", {"default": 64, "min": 1, "max": 99999}),
                 "height":                 ("INT", {"default": 64, "min": 1, "max": 99999}),
-                "multiple":               (["8 (VAE minimum)", "32 (SD1.5)", "64 (SDXL / Flux)"],),
+                "multiple":               (["8 (VAE minimum)", "16 (Flux)", "32 (SD1.5)", "64 (SDXL)"],),
                 "target":                 (TARGET_SIZES, {"default": "none"}),
                 "force_square":           ("BOOLEAN", {"default": False}),
                 "force_target_downscale": ("BOOLEAN", {"default": False}),
@@ -73,7 +73,7 @@ class BBoxMultipleFix:
         mult = int(multiple.split(" ")[0])
         B, H_src, W_src, C = image.shape
 
-        # ── Step 1 : ratio forcé 1:1 si activé ───────────────────────────────
+        # ── Step 1 : ratio force 1:1 si active ───────────────────────────────
         if force_square:
             base = max(width, height)
             base_w, base_h = base, base
@@ -120,7 +120,7 @@ class BBoxMultipleFix:
 
             else:
                 # Fallback historique : arrondi au multiple + cap MAX_SIDE
-                print(f"[BBoxMultipleFix] target={t} ≤ bbox → fallback cap {MAX_SIDE}px")
+                print(f"[BBoxMultipleFix] target={t} <= bbox -> fallback cap {MAX_SIDE}px")
                 new_w = math.ceil(base_w / mult) * mult
                 new_h = math.ceil(base_h / mult) * mult
 
@@ -144,7 +144,7 @@ class BBoxMultipleFix:
                     up_w, up_h = new_w, new_h
 
         else:
-            # Mode none : arrondi au multiple, cap MAX_SIDE si dépassement
+            # Mode none : arrondi au multiple, cap MAX_SIDE si depassement
             new_w = math.ceil(base_w / mult) * mult
             new_h = math.ceil(base_h / mult) * mult
 
@@ -167,7 +167,7 @@ class BBoxMultipleFix:
             else:
                 up_w, up_h = new_w, new_h
 
-        # ── Step 3 : expansion symétrique autour du bbox original ─────────────
+        # ── Step 3 : expansion symetrique autour du bbox original ─────────────
         new_x = x - (new_w - width)  // 2
         new_y = y - (new_h - height) // 2
 
@@ -195,9 +195,9 @@ class BBoxMultipleFix:
             mask = mask.unsqueeze(0)
         mask_cropped = mask[:, new_y:new_y + new_h, new_x:new_x + new_w]
 
-        # ── Step 5 : resize Lanczos si nécessaire ─────────────────────────────
+        # ── Step 5 : resize Lanczos si necessaire ─────────────────────────────
         if need_resize and (up_w != orig_w or up_h != orig_h):
-            print(f"[BBoxMultipleFix] {resize_label} : {orig_w}x{orig_h} → {up_w}x{up_h}")
+            print(f"[BBoxMultipleFix] {resize_label} : {orig_w}x{orig_h} -> {up_w}x{up_h}")
             img_cropped  = self._resize(img_cropped,  up_w, up_h, "image")
             mask_cropped = self._resize(mask_cropped, up_w, up_h, "mask")
             final_w, final_h = up_w, up_h
