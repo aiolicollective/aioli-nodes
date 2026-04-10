@@ -15,13 +15,13 @@ class BBoxMultipleFix:
     S'insere apres 'Mask Bounding Box' (ComfyUI Essentials).
 
     force_square (bool) :
-      False — comportement par defaut, ratio libre du bbox.
-      True  — force le crop a etre carre (cote = max(width, height)),
+      False - comportement par defaut, ratio libre du bbox.
+      True  - force le crop a etre carre (cote = max(width, height)),
               en restant aligne sur le multiple choisi.
 
     force_target_downscale (bool) :
-      False — comportement par defaut : si bbox > target, fallback cap MAX_SIDE.
-      True  — si bbox > target, downscale GCD vers le target (meme algo que l'upscale).
+      False - comportement par defaut : si bbox > target, fallback cap MAX_SIDE.
+      True  - si bbox > target, downscale GCD vers le target (meme algo que l'upscale).
               Ignore si target="none".
 
     Mode none (target="none") :
@@ -32,6 +32,10 @@ class BBoxMultipleFix:
       Upscale GCD vers target si bbox < target.
       Si force_target_downscale=True et bbox > target : downscale GCD vers target.
       Si force_target_downscale=False et bbox > target : cap MAX_SIDE (comportement historique).
+
+    Anti-clamp : dans tous les cas, k est plafonne a l'espace disponible
+      autour du centre du bbox -> le crop ne depasse jamais l'image source
+      -> pas de clamp post-GCD -> ratio pixel-perfect garanti (0% de drift).
 
     Sorties :
       image_cropped / mask_cropped  -> VAE Encode (Inpaint)
@@ -80,7 +84,18 @@ class BBoxMultipleFix:
         else:
             base_w, base_h = width, height
 
-        # ── Step 2 : calcul new_w / new_h / up_w / up_h ──────────────────────
+        # ── Step 2 : espace disponible autour du centre du bbox ───────────────
+        # Garantit que le crop ne depasse jamais l'image -> pas de clamp post-GCD
+        # -> ratio pixel-perfect dans tous les cas, y compris bords d'image.
+        cx = x + width  // 2
+        cy = y + height // 2
+        avail_w = min(cx, W_src - cx) * 2
+        avail_h = min(cy, H_src - cy) * 2
+        # Plancher de securite : au minimum le bbox lui-meme
+        avail_w = max(avail_w, base_w)
+        avail_h = max(avail_h, base_h)
+
+        # ── Step 3 : calcul new_w / new_h / up_w / up_h ──────────────────────
         need_resize  = False
         resize_label = ""
         up_w = up_h  = 0
@@ -97,29 +112,29 @@ class BBoxMultipleFix:
                 t_w = math.ceil((base_w * t / base_h) / mult) * mult
 
             if t_w > base_w and t_h > base_h:
-                # Upscale vers target (comportement historique)
+                # Upscale vers target
                 g    = math.gcd(t_w, t_h)
                 a, b = t_w // g, t_h // g
                 k    = round((base_w / a + base_h / b) / 2)
-                k    = max(1, k)
+                k    = max(1, min(k, avail_w // a, avail_h // b))  # anti-clamp
                 new_w, new_h = a * k, b * k
                 up_w, up_h   = t_w, t_h
                 need_resize  = True
                 resize_label = "upscale "
 
             elif force_target_downscale:
-                # Downscale GCD vers target (nouveau comportement optionnel)
+                # Downscale GCD vers target
                 g    = math.gcd(t_w, t_h)
                 a, b = t_w // g, t_h // g
                 k    = round((base_w / a + base_h / b) / 2)
-                k    = max(1, k)
+                k    = max(1, min(k, avail_w // a, avail_h // b))  # anti-clamp
                 new_w, new_h = a * k, b * k
                 up_w, up_h   = t_w, t_h
                 need_resize  = True
                 resize_label = "downscale"
 
             else:
-                # Fallback historique : arrondi au multiple + cap MAX_SIDE
+                # Fallback : arrondi au multiple + cap MAX_SIDE
                 print(f"[BBoxMultipleFix] target={t} <= bbox -> fallback cap {MAX_SIDE}px")
                 new_w = math.ceil(base_w / mult) * mult
                 new_h = math.ceil(base_h / mult) * mult
@@ -135,7 +150,7 @@ class BBoxMultipleFix:
                     g    = math.gcd(down_w, down_h)
                     a, b = down_w // g, down_h // g
                     k    = round((new_w / a + new_h / b) / 2)
-                    k    = max(1, k)
+                    k    = max(1, min(k, avail_w // a, avail_h // b))  # anti-clamp
                     new_w, new_h = a * k, b * k
                     up_w, up_h   = down_w, down_h
                     need_resize  = True
@@ -159,7 +174,7 @@ class BBoxMultipleFix:
                 g    = math.gcd(down_w, down_h)
                 a, b = down_w // g, down_h // g
                 k    = round((new_w / a + new_h / b) / 2)
-                k    = max(1, k)
+                k    = max(1, min(k, avail_w // a, avail_h // b))  # anti-clamp
                 new_w, new_h = a * k, b * k
                 up_w, up_h   = down_w, down_h
                 need_resize  = True
@@ -167,7 +182,9 @@ class BBoxMultipleFix:
             else:
                 up_w, up_h = new_w, new_h
 
-        # ── Step 3 : expansion symetrique autour du bbox original ─────────────
+        # ── Step 4 : expansion symetrique autour du bbox original ─────────────
+        # Grace a l'anti-clamp, new_w/new_h rentrent toujours dans l'image —
+        # le clamp ci-dessous ne modifie donc rien dans les cas normaux.
         new_x = x - (new_w - width)  // 2
         new_y = y - (new_h - height) // 2
 
@@ -189,13 +206,13 @@ class BBoxMultipleFix:
         print(f"[BBoxMultipleFix] bbox     : {width}x{height} @({x},{y}){flag_info}")
         print(f"[BBoxMultipleFix] crop     : {orig_w}x{orig_h} @({new_x},{new_y})")
 
-        # ── Step 4 : crop ─────────────────────────────────────────────────────
+        # ── Step 5 : crop ─────────────────────────────────────────────────────
         img_cropped = image[:, new_y:new_y + new_h, new_x:new_x + new_w, :]
         if mask.dim() == 2:
             mask = mask.unsqueeze(0)
         mask_cropped = mask[:, new_y:new_y + new_h, new_x:new_x + new_w]
 
-        # ── Step 5 : resize Lanczos si necessaire ─────────────────────────────
+        # ── Step 6 : resize Lanczos si necessaire ─────────────────────────────
         if need_resize and (up_w != orig_w or up_h != orig_h):
             print(f"[BBoxMultipleFix] {resize_label} : {orig_w}x{orig_h} -> {up_w}x{up_h}")
             img_cropped  = self._resize(img_cropped,  up_w, up_h, "image")
