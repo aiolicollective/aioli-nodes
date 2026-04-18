@@ -51,9 +51,9 @@ Load Image → 🖼️ Ratio Outpaint Calc → VAE Encode (Inpaint) → KSampler
 ## 📐 BBox Multiple Fix
 
 Plugs in right after **Mask Bounding Box** (ComfyUI Essentials).  
-Rounds the crop to the chosen multiple and optionally upscales to a Flux-friendly resolution.
+Rounds the crop to the chosen multiple and handles scaling (up or down) to a Flux-friendly resolution.
 
-The node ensures the inpainted region stitches back **pixel-perfectly** onto the base image — no border artefacts, no alignment drift.
+The node ensures the inpainted region stitches back **pixel-perfectly** onto the base image — no border artefacts, no alignment drift, even when the mask zone is at the very edge of the image.
 
 **Example**
 
@@ -70,29 +70,35 @@ The node ensures the inpainted region stitches back **pixel-perfectly** onto the
 | y | INT | `y` output from Mask Bounding Box |
 | width | INT | `width` output from Mask Bounding Box |
 | height | INT | `height` output from Mask Bounding Box |
-| multiple | dropdown | `8 (VAE)` · `32 (SD1.5)` · `64 (SDXL/Flux)` |
+| multiple | dropdown | `8 (VAE minimum)` · `16 (Flux)` · `32 (SD1.5)` · `64 (SDXL)` |
 | target | dropdown | `none` · `512` · `768` · `1024` · `1536` · `2048` |
+| force_square | BOOLEAN | Force crop to 1:1 ratio — side = max(width, height). Default: `False` |
+| force_target_downscale | BOOLEAN | If bbox > target, downscale toward target (GCD). Default: `False` — fallback to 2048 cap |
 
 **Outputs**
 | Output | Type | Description |
 |--------|------|-------------|
-| image_cropped | IMAGE | Cropped image (scaled if target is set or if bbox > 2048px) |
-| mask_cropped | MASK | Cropped mask (scaled if target is set or if bbox > 2048px) |
+| image_cropped | IMAGE | Cropped image (scaled if needed) |
+| mask_cropped | MASK | Cropped mask (scaled if needed) |
 | x | INT | x position for ImageCompositeMasked |
 | y | INT | y position for ImageCompositeMasked |
-| orig_width | INT | Crop width BEFORE scale (use for resize-back after VAE Decode) |
-| orig_height | INT | Crop height BEFORE scale (use for resize-back after VAE Decode) |
-| width | INT | Final width (after scale) |
-| height | INT | Final height (after scale) |
-| target_size | INT | Target value as INT (0 if `none`) — connect directly to ImageResize+ |
+| orig_width | INT | Crop width in source BEFORE scale — use for resize-back after VAE Decode |
+| orig_height | INT | Crop height in source BEFORE scale |
+| width | INT | Final width after scale |
+| height | INT | Final height after scale |
+| target_size | INT | Numeric value of target (0 if `none`) — connect directly to ImageResize+ |
 
 **Scaling behaviour**
 
 | Situation | Behaviour |
-|-----------|----------|
-| bbox ≤ 2048, target `none` | Round up to multiple only — no scale |
-| bbox ≤ 2048, target set | Upscale crop to target — pixel-perfect ratio via GCD |
-| bbox > 2048 (any target) | Downscale crop to fit 2048px — ratio preserved via GCD |
+|-----------|-----------|
+| bbox ≤ target | Upscale crop toward target — exact ratio via GCD |
+| bbox > target + `force_target_downscale = True` | Downscale crop toward target — exact ratio via GCD |
+| bbox > target + `force_target_downscale = False` | Fallback: round to multiple + cap at 2048px |
+| target = `none` + bbox > 2048px | Downscale crop to fit 2048px — ratio preserved via GCD |
+| `force_square = True` | Crop is squared first (max side), then scaled |
+
+> **Anti-clamp guarantee:** the crop is always constrained to the available space around the bbox center — even when the mask zone is at the image border, the ratio is preserved pixel-perfectly (0% drift).
 
 **Workflow without scale**
 ```
@@ -102,9 +108,12 @@ BBox Fix → VAE Encode → KSampler → VAE Decode → ImageCompositeMasked ←
 **Workflow with upscale / downscale**
 ```
 BBox Fix → VAE Encode → KSampler → VAE Decode
-  ↓ orig_width, orig_height              ↓
-  ↓ x, y        → ImageResize+ ←────────┘
-       ↑ target_size
+  │                                      │
+  ├── orig_width, orig_height            │
+  ├── x, y               ImageResize+ ←─┘
+  │                       ↑
+  └── target_size ────────┘
+                          │
                ImageCompositeMasked ← x, y
 ```
 
@@ -114,7 +123,7 @@ BBox Fix → VAE Encode → KSampler → VAE Decode
 
 Plugs in right after **VAE Decode**, before `ImageResize+` / `ImageCompositeMasked`.
 
-Corrects colorimetric drift introduced by the generation — selectively applies a LAB color match only on pixels that haven't significantly changed (similar zone), leaving the truly creative pixels untouched.
+Corrects colorimetric drift introduced by the generation — selectively applies a LAB color match only on pixels that haven't significantly changed, leaving truly creative pixels untouched. No external dependencies (pure numpy + torch).
 
 **Inputs**
 | Parameter | Type | Description |
@@ -124,7 +133,7 @@ Corrects colorimetric drift introduced by the generation — selectively applies
 | delta_e_threshold | FLOAT | Similarity threshold (-1 = auto). Below = corrected, above = creative/intact |
 | blend_strength | FLOAT | Color match strength on similar zones (0 = none, 1 = full) |
 | feather_radius | INT | Gaussian blur radius on the correction mask (0 = disabled) |
-| mask *(optional)* | MASK | Override mode: bypasses Delta-E, the mask drives correction directly |
+| mask *(optional)* | MASK | Override mode: bypasses Delta-E entirely, the mask drives correction directly |
 
 **Outputs**
 | Output | Type | Description |
@@ -193,7 +202,7 @@ LoadImageOutput (with mask painter)
   └→ FLUX2KLEIN_INPAINT subgraph
         ├── ImageScaleToTotalPixels   (resize source to working MP)
         ├── MaskBoundingBox+          (detect mask region)
-        ├── BBoxMultipleFix           (crop + scale for Flux, cap 2048px)
+        ├── BBoxMultipleFix           (crop + scale for Flux, anti-clamp, cap 2048px)
         ├── GrowMaskWithBlur          (soften mask edges)
         ├── VAEEncode × 2 + SetLatentNoiseMask
         ├── CLIPTextEncode → ReferenceLatent → FluxGuidance
