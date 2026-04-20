@@ -1,0 +1,37 @@
+{
+  "id": "8e172968-3124-45bf-b2d2-4b288873fd79",
+  "revision": 0,
+  "last_node_id": 810,
+  "last_link_id": 1011,
+  "nodes": [
+    {
+      "id": 2,
+      "type": "a10117bb-1cf2-4f37-b521-bb0bf1bed002",
+      "pos": [140.0882748987367, -110.0965174750666],
+      "size": [552.953125, 406.828125],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [
+        {"label": "IMAGE", "name": "image", "type": "IMAGE", "link": 1009},
+        {"label": "MASK", "name": "mask", "type": "MASK", "link": 1010},
+        {"label": "force_square", "name": "force_square", "type": "BOOLEAN", "widget": {"name": "force_square"}, "link": null},
+        {"label": "inpaint_mode  (True=zone, False=whole image)", "name": "inpaint_mode", "type": "BOOLEAN", "widget": {"name": "inpaint_mode"}, "link": null},
+        {"label": "use_mask_blur", "name": "use_mask_blur", "type": "BOOLEAN", "widget": {"name": "use_mask_blur"}, "link": null},
+        {"label": "image_cropped_in", "name": "inpainted_image", "type": "IMAGE", "link": 361}
+      ],
+      "outputs": [
+        {"label": "image_cropped_out", "name": "image_cropped", "type": "IMAGE", "links": [332, 333, 342]},
+        {"label": "mask_cropped", "name": "mask_cropped", "type": "MASK", "links": [1007]},
+        {"label": "recomposed_image", "name": "recomposed_image", "type": "IMAGE", "links": [363, 1008]}
+      ],
+      "properties": {
+        "proxyWidgets": [["400", "a"], ["401", "a"], ["601", "a"], ["402", "value"], ["700", "value"]]
+      },
+      "widgets_values": [],
+      "color": "#223",
+      "bgcolor": "#335"
+    }
+  ],
+  "_note": "This is a placeholder. The actual file will be pushed via push_files."
+}
