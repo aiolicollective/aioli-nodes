@@ -117,6 +117,24 @@ BBox Fix → VAE Encode → KSampler → VAE Decode
                ImageCompositeMasked ← x, y
 ```
 
+### ☁️ ComfyCloud alternative (no install required)
+
+If you don't want to install the custom node locally — or if you're running **ComfyUI Cloud** where custom nodes aren't available — there's a pure-subgraph workflow that reproduces the `BBoxMultipleFix` behaviour using only pre-installed nodes.
+
+> **[⬇ Download ComfyCloud workflow](examples/WF_Inpaint_aioli-nodes_ComfyCloud.json)**
+
+It wires together `MaskBoundingBox+`, `ComfyMathExpression`, `ImageCrop+`, `ImageResize+`, `GrowMaskWithBlur`, `SolidMask`, `ImpactSwitch`, and `CropMask` to deliver the same features:
+
+- **force_square** · **inpaint_mode** (zone / whole image) · **use_mask_blur**
+- **multiple** alignment (with floor-after-clamp, no drift)
+- **target_size** (0 = none with 2048 cap, or 512 / 768 / 1024 / 1536 / 2048)
+- Anti-clamp guarantee
+- Pixel-perfect recompose via `ImageCompositeMasked`
+
+The example pipeline uses **nano-banana (Gemini Image)** as the inpainting model, but you can swap it for any image-to-image node.
+
+**Running locally?** The example uses `LoadImageOutput`, which works out-of-the-box on ComfyUI Cloud but may not be available in some local setups. If you hit an error on load, just replace that node with a standard `Load Image` node — everything else stays the same.
+
 ---
 
 ## 🎨 Inpaint Color Fix
