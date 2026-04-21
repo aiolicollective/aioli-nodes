@@ -199,7 +199,8 @@ They all package the same reusable subgraph **`Aioli Node Subgraph — BBox Fix`
 
 The lightest variant: just an API call to Gemini Image, no local diffusion weights needed. Includes the v3 `image2` input for multi-image prompting.
 
-> **[⬇ Download workflow](examples/WF_Inpaint_aioli-subgraph_ComfyCloud_nano-banana.json)**
+> **[⬇ Download workflow](examples/WF_Inpaint_aioli-subgraph_ComfyCloud_nano-banana.json)**  
+> **[🚀 Try it live — "NanoInpaint — CropNStitch" on ComfyUI Cloud](https://cloud.comfy.org/?share=2f8ca539ed1a)** *(optimised for the Cloud app runtime — no setup, just paint & run)*
 
 ![nano-banana example](examples/IMG_Inpaint_aioli-subgraph_ComfyCloud_nano-banana.png)
 
