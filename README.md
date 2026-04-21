@@ -57,7 +57,7 @@ The node ensures the inpainted region stitches back **pixel-perfectly** onto the
 
 **Example**
 
-![BBox Multiple Fix — inpaint example](examples/BBOX_Multiple_Fix_Example.jpg)
+![BBox Multiple Fix — inpaint example](examples/IMG_Inpaint_aioli-nodes_Flux2Klein.jpg)
 
 *The inpaint applied back onto the base image fits the original contours exactly — pixel-perfect edges, no alignment drift.*
 
@@ -121,7 +121,7 @@ BBox Fix → VAE Encode → KSampler → VAE Decode
 
 If you don't want to install the custom node locally — or if you're running **ComfyUI Cloud** where custom nodes aren't available — there's a pure-subgraph workflow that reproduces the `BBoxMultipleFix` behaviour using only pre-installed nodes.
 
-> **[⬇ Download ComfyCloud workflow](examples/WF_Inpaint_aioli-nodes_ComfyCloud.json)**
+> **[⬇ Download ComfyCloud workflow](examples/WF_Inpaint_aioli-subgraph_ComfyCloud_nano-banana.json)**
 
 It wires together `MaskBoundingBox+`, `ComfyMathExpression`, `ImageCrop+`, `ImageResize+`, `GrowMaskWithBlur`, `SolidMask`, `ImpactSwitch`, and `CropMask` to deliver the same features:
 
