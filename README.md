@@ -1,6 +1,19 @@
 # Aioli Nodes — ComfyUI Custom Node Suite
 
-Three utility nodes for outpainting and inpainting in ComfyUI.
+Three utility nodes for outpainting and inpainting in ComfyUI — plus four ready-to-run example workflows, including three that work out-of-the-box on **ComfyUI Cloud** (no install required).
+
+---
+
+## 💡 Why this approach? (TL;DR)
+
+All workflows in this repo use the same core idea: **inpaint only the masked region, never the whole image**.
+
+- **The source image's dimensions are preserved end-to-end.** Only the crop around the mask goes through the model / KSampler — so the full-resolution original never gets downscaled, stretched, or otherwise degraded to fit a generation budget.
+- **More detail inside the masked region.** Since only the crop is generated, the model's entire budget (attention, denoising steps, resolution) is spent on that zone — not diluted across background pixels that aren't changing.
+- **`force_square` avoids internal recrops.** Most image-edit models (nano-banana, Flux, Qwen-Edit, SDXL inpaint) quietly recrop or letterbox any non-1:1 input. Forcing the crop to be square before sending prevents this "pixel shift", keeping the output pixel-aligned with the source.
+- **Pixel-perfect recompose.** After generation, the result is stitched back onto the untouched source at the exact original coordinates — no drift, no seams, no colour shift at the mask edges.
+
+---
 
 ## Installation
 
@@ -57,7 +70,7 @@ The node ensures the inpainted region stitches back **pixel-perfectly** onto the
 
 **Example**
 
-![BBox Multiple Fix — inpaint example](examples/IMG_Inpaint_aioli-nodes_Flux2Klein.jpg)
+![BBox Multiple Fix — Flux2Klein inpaint example](examples/IMG_Inpaint_aioli-nodes_Flux2Klein.jpg)
 
 *The inpaint applied back onto the base image fits the original contours exactly — pixel-perfect edges, no alignment drift.*
 
@@ -117,24 +130,6 @@ BBox Fix → VAE Encode → KSampler → VAE Decode
                ImageCompositeMasked ← x, y
 ```
 
-### ☁️ ComfyCloud alternative (no install required)
-
-If you don't want to install the custom node locally — or if you're running **ComfyUI Cloud** where custom nodes aren't available — there's a pure-subgraph workflow that reproduces the `BBoxMultipleFix` behaviour using only pre-installed nodes.
-
-> **[⬇ Download ComfyCloud workflow](examples/WF_Inpaint_aioli-subgraph_ComfyCloud_nano-banana.json)**
-
-It wires together `MaskBoundingBox+`, `ComfyMathExpression`, `ImageCrop+`, `ImageResize+`, `GrowMaskWithBlur`, `SolidMask`, `ImpactSwitch`, and `CropMask` to deliver the same features:
-
-- **force_square** · **inpaint_mode** (zone / whole image) · **use_mask_blur**
-- **multiple** alignment (with floor-after-clamp, no drift)
-- **target_size** (0 = none with 2048 cap, or 512 / 768 / 1024 / 1536 / 2048)
-- Anti-clamp guarantee
-- Pixel-perfect recompose via `ImageCompositeMasked`
-
-The example pipeline uses **nano-banana (Gemini Image)** as the inpainting model, but you can swap it for any image-to-image node.
-
-**Running locally?** The example uses `LoadImageOutput`, which works out-of-the-box on ComfyUI Cloud but may not be available in some local setups. If you hit an error on load, just replace that node with a standard `Load Image` node — everything else stays the same.
-
 ---
 
 ## 🎨 Inpaint Color Fix
@@ -179,18 +174,74 @@ Corrects colorimetric drift introduced by the generation — selectively applies
 **Position in workflow**
 ```
 BBoxMultipleFix
-  └── image_cropped ──────────────────────────────────┐
-                                                       ↓
   └── image_cropped → KSampler → VAEDecode → 🎨 InpaintColorFix → ImageResize+ → ImageCompositeMasked
 ```
 
 ---
 
-## 🔁 Example Workflow — Flux2Klein Inpaint
+## ☁️ ComfyCloud-compatible workflows (no install required)
+
+If you don't want to install the custom node locally — or if you're running **ComfyUI Cloud** where custom nodes aren't available — there are three pure-subgraph workflows that reproduce the `BBoxMultipleFix` behaviour using only pre-installed nodes.
+
+They all package the same reusable subgraph **`Aioli Node Subgraph — BBox Fix`**, which wires together `MaskBoundingBox+`, `ComfyMathExpression`, `ImageCrop+`, `ImageResize+`, `ImagePadForOutpaint`, `MaskComposite`, `GrowMaskWithBlur`, `SolidMask`, `ImpactSwitch`, `BatchImagesNode`, and `CropMask` to deliver the same features:
+
+- **force_square** · **inpaint_mode** (zone / whole image) · **use_mask_blur**
+- **multiple** alignment (with floor-after-clamp, no drift)
+- **target_size** (0 = none with 2048 cap, or 512 / 768 / 1024 / 1536 / 2048)
+- Anti-clamp guarantee
+- Pixel-perfect recompose via `ImageCompositeMasked`
+- **Auto 1:1 padding** in whole-image mode (v2): pads source to a square before sending to the model, then strips the padding off — prevents the model from internally recropping non-square images
+- **Optional second reference image** (v3, nano-banana only): batch a style-reference image alongside the crop for multi-image prompting — with a `use_image2` toggle that safely bypasses the batch when disabled
+
+### Three flavours, one per inpainting model
+
+#### 🍌 nano-banana (Gemini Image) — v3
+
+The lightest variant: just an API call to Gemini Image, no local diffusion weights needed. Includes the v3 `image2` input for multi-image prompting.
+
+> **[⬇ Download workflow](examples/WF_Inpaint_aioli-subgraph_ComfyCloud_nano-banana.json)**
+
+![nano-banana example](examples/IMG_Inpaint_aioli-subgraph_ComfyCloud_nano-banana.png)
+
+#### 🌀 Flux.2 Klein 9B
+
+Full local diffusion pipeline using the official ComfyUI Flux.2 Klein inpaint template, combined with the BBox Fix subgraph for pixel-perfect crop & recompose.
+
+> **[⬇ Download workflow](examples/WF_Inpaint_aioli-subgraph_ComfyCloud_Flux2Klein.json)**
+
+![Flux2Klein example](examples/IMG_Inpaint_aioli-subgraph_ComfyCloud_Flux2Klein.jpg)
+
+#### 🏮 Qwen Image Edit 2511
+
+Same idea as Flux2Klein but using the Qwen Image Edit 2511 template — a different diffusion model, same BBox Fix subgraph wrapper.
+
+> **[⬇ Download workflow](examples/WF_Inpaint_aioli-subgraph_ComfyCloud_QwenImageEdit_2511.json)**
+
+![Qwen Image Edit example](examples/IMG_Inpaint_aioli-subgraph_ComfyCloud_QwenImageEdit_2511.png)
+
+### Subgraph widgets (all three workflows)
+
+| Widget | Default | Purpose |
+|---|---|---|
+| `force_square` | `True` | Force crop to 1:1 ratio (avoids model-internal recrop) |
+| `inpaint_mode` | `True` | `True` = zone mode (crop around mask) · `False` = whole-image mode (pad source to 1:1, send everything, crop back) |
+| `use_mask_blur` | `False` | Apply `GrowMaskWithBlur` before bbox detection |
+| `multiple` | `16` | Dimension alignment (16/32/64 for VAE; 0/1 disables) |
+| `target_size` | `0` | Long-side target: `0` = none (cap 2048) · `512` · `768` · `1024` · `1536` · `2048` |
+| `use_image2` *(nano-banana v3 only)* | `False` | Batch a second reference image alongside the crop |
+
+### Running locally?
+
+The nano-banana example uses `LoadImageOutput`, which works out-of-the-box on ComfyUI Cloud but may not be available in some local setups. If you hit an error on load, just replace that node with a standard `Load Image` node — everything else stays the same.
+
+---
+
+## 🔁 Example Workflow — Flux2Klein (custom-nodes version)
 
 > **[⬇ Download workflow JSON](examples/WF_Inpaint_aioli-nodes.json)**
 
-A complete, ready-to-use inpaint workflow for **Flux2Klein** (9B), packaged as a ComfyUI subgraph (`FLUX2KLEIN_INPAINT`).
+A complete, ready-to-use inpaint workflow for **Flux2Klein** (9B), packaged as a ComfyUI subgraph (`FLUX2KLEIN_INPAINT`).  
+This is the **custom-nodes version** — uses `BBoxMultipleFix` and `InpaintColorFix` directly. For a no-install alternative, see the [ComfyCloud workflows](#️-comfycloud-compatible-workflows-no-install-required) above.
 
 **Required models**
 | Role | File |
@@ -229,7 +280,7 @@ LoadImageOutput (with mask painter)
         ├── VAEDecode
         ├── InpaintColorFix           (selective LAB color match)
         ├── ImageResize+              (resize back to orig_width × orig_height)
-        └── ImageCompositeMasked     (stitch result onto source)
+        └── ImageCompositeMasked      (stitch result onto source)
   └→ SaveImage + Image Comparer (before / after)
 ```
 
@@ -238,3 +289,15 @@ LoadImageOutput (with mask painter)
 2. Point `LoadImageOutput` to your image and paint your mask
 3. Set your prompt and target resolution in the subgraph inputs
 4. Run — the result is composited pixel-perfectly back onto the source image
+
+---
+
+## 👋 About
+
+These nodes and workflows are built and maintained by the **aioli collective** — a creative studio exploring what's next for AI-assisted image work.
+
+If this saved you time or inspired something, a ⭐ on the repo goes a long way. You can also follow us to see what we're cooking next:
+
+🌐 [aiolicollective.com](https://aiolicollective.com/) · 📷 [@aioli.collective](https://www.instagram.com/aioli.collective/)
+
+Feedback, bug reports, and pull requests are always welcome via [GitHub Issues](https://github.com/aiolicollective/aioli-nodes/issues).
