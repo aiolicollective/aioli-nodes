@@ -113,6 +113,8 @@ The node ensures the inpainted region stitches back **pixel-perfectly** onto the
 
 > **Anti-clamp guarantee:** the crop is always constrained to the available space around the bbox center — even when the mask zone is at the image border, the ratio is preserved pixel-perfectly (0% drift).
 
+> **Note on `force_square` with very large bboxes:** if `max(bbox_w, bbox_h)` exceeds the smallest source dimension (i.e. the theoretical square doesn't fit in the image), the crop is reduced to a non-square rectangle by the final clamp, then **stretched** to fit the square target. The node still returns the original (pre-stretch) dimensions via `orig_width` / `orig_height`, so for pixel-perfect recompose in this case, set the downstream `ImageResize+` to **stretch mode (`keep_proportion = False`)** — the inverse stretch will then restore the correct shape before `ImageCompositeMasked`. A warning is logged when this case is triggered.
+
 **Workflow without scale**
 ```
 BBox Fix → VAE Encode → KSampler → VAE Decode → ImageCompositeMasked ← x, y
