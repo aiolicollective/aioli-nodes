@@ -18,6 +18,14 @@ class BBoxMultipleFix:
       False - comportement par defaut, ratio libre du bbox.
       True  - force le crop a etre carre (cote = max(width, height)),
               en restant aligne sur le multiple choisi.
+              NOTE : si max(width, height) > min(image_w, image_h), le carre
+              theorique ne tient pas dans la source. Le clamp final reduit
+              alors le crop a un rectangle, mais la cible de resize reste
+              carree -> l'image est etiree pour rentrer dans le carre cible.
+              Pour un recompose pixel-perfect dans ce cas, connecter un
+              ImageResize+ en mode 'stretch' (keep_proportion=False) en sortie
+              du modele, en utilisant orig_width / orig_height comme cibles.
+              Un log d'avertissement est emis quand ce cas se produit.
 
     force_target_downscale (bool) :
       False - comportement par defaut : si bbox > target, fallback cap MAX_SIDE.
@@ -81,6 +89,15 @@ class BBoxMultipleFix:
         if force_square:
             base = max(width, height)
             base_w, base_h = base, base
+            # Warn when the theoretical square doesn't fit in the source —
+            # the crop will end up non-square (clamped) and stretched to fit
+            # the square target. User must use ImageResize+ in 'stretch' mode
+            # (keep_proportion=False) downstream for pixel-perfect recompose.
+            if base > min(W_src, H_src):
+                print(f"[BBoxMultipleFix] WARNING : force_square + bbox larger than smallest source dim "
+                      f"({base}px > min({W_src},{H_src})). Crop will be non-square and stretched to fit "
+                      f"a square. Set downstream ImageResize+ to 'stretch' mode (keep_proportion=False) "
+                      f"using orig_width/orig_height for pixel-perfect recompose.")
         else:
             base_w, base_h = width, height
 
