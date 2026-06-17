@@ -3,6 +3,7 @@ from .nodes.bbox_fix               import BBoxMultipleFix
 from .nodes.inpaint_color_fix      import InpaintColorFix
 from .nodes.bbox_assembler         import BBoxMultipleAssembler
 from .nodes.regional_conditioning  import RegionalMaskConditioning
+from .nodes.region_mask_list       import RegionMaskList
 
 NODE_CLASS_MAPPINGS = {
     "RatioOutpaintCalc":        RatioOutpaintCalc,
@@ -10,6 +11,7 @@ NODE_CLASS_MAPPINGS = {
     "InpaintColorFix":          InpaintColorFix,
     "BBoxMultipleAssembler":    BBoxMultipleAssembler,
     "RegionalMaskConditioning": RegionalMaskConditioning,
+    "RegionMaskList":           RegionMaskList,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
@@ -18,6 +20,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "InpaintColorFix":          "🎨 Inpaint Color Fix",
     "BBoxMultipleAssembler":    "🧩 BBox Multiple Assembler",
     "RegionalMaskConditioning": "🗺️ Regional Mask Conditioning",
+    "RegionMaskList":           "🧱 Region Mask List (+background)",
 }
 
 __all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS"]
