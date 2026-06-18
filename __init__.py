@@ -4,6 +4,7 @@ from .nodes.inpaint_color_fix      import InpaintColorFix
 from .nodes.bbox_assembler         import BBoxMultipleAssembler
 from .nodes.regional_conditioning  import RegionalMaskConditioning
 from .nodes.region_mask_list       import RegionMaskList
+from .nodes.mask_split_regions     import MaskSplitRegions
 
 NODE_CLASS_MAPPINGS = {
     "RatioOutpaintCalc":        RatioOutpaintCalc,
@@ -12,6 +13,7 @@ NODE_CLASS_MAPPINGS = {
     "BBoxMultipleAssembler":    BBoxMultipleAssembler,
     "RegionalMaskConditioning": RegionalMaskConditioning,
     "RegionMaskList":           RegionMaskList,
+    "MaskSplitRegions":         MaskSplitRegions,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
@@ -21,6 +23,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "BBoxMultipleAssembler":    "🧩 BBox Multiple Assembler",
     "RegionalMaskConditioning": "🗺️ Regional Mask Conditioning",
     "RegionMaskList":           "🧱 Region Mask List (+background)",
+    "MaskSplitRegions":         "✂️ Mask Split Regions (manual multi)",
 }
 
 __all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS"]
