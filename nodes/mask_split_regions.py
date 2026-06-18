@@ -33,12 +33,19 @@ class MaskSplitRegions:
 
     Pour une seule tache -> 1 masque (comportement identique a avant).
 
-    Parametres :
-      threshold      : binarisation du masque dessine (0..1)
-      min_area       : taches plus petites (en pixels) ignorees (anti-points perdus)
-      merge_distance : rapproche/fusionne les traits proches avant decoupe (0 = strict)
-      connectivity   : 4 (cote a cote) ou 8 (diagonales comptent)
-      sort_by        : ordre des regions en sortie
+    Widgets exposes (les seuls qu'on regle vraiment) :
+      threshold : binarisation du masque dessine (0..1)
+      min_area  : taches plus petites (en pixels) ignorees (anti-points perdus)
+      sort_by   : ordre des regions en sortie (= hierarchie de l'assembler)
+
+    Reglages figes dans le code (rarement touches, defauts qui conviennent a la
+    quasi-totalite des masques dessines ; modifiables ici au besoin) :
+      connectivity = 8   : les diagonales comptent. Mettre 4 pour ne relier que
+                           les pixels cote a cote (taches qui se touchent par un
+                           coin restent separees).
+      merge_distance = 0 : pas de fusion. Mettre > 0 pour dilater avant le
+                           decoupage et fusionner des traits voisins en une
+                           seule region.
 
     Dependance : scipy.ndimage (deja livre avec ComfyUI). Aucun install requis.
     INPUT_IS_LIST = False (un seul masque en entree, on mappe pas).
@@ -51,11 +58,9 @@ class MaskSplitRegions:
                 "mask": ("MASK",),
             },
             "optional": {
-                "threshold":      ("FLOAT", {"default": 0.5, "min": 0.0, "max": 1.0, "step": 0.01}),
-                "min_area":       ("INT",   {"default": 64, "min": 0, "max": 4096 * 4096}),
-                "merge_distance": ("INT",   {"default": 0, "min": 0, "max": 256}),
-                "connectivity":   ([8, 4],),
-                "sort_by":        (["area_desc", "area_asc", "top_to_bottom", "left_to_right"],),
+                "threshold": ("FLOAT", {"default": 0.5, "min": 0.0, "max": 1.0, "step": 0.01}),
+                "min_area":  ("INT",   {"default": 64, "min": 0, "max": 4096 * 4096}),
+                "sort_by":   (["area_desc", "area_asc", "top_to_bottom", "left_to_right"],),
             },
         }
 
@@ -65,8 +70,9 @@ class MaskSplitRegions:
     FUNCTION = "split"
     CATEGORY = "Aioli Nodes"
 
-    def split(self, mask, threshold=0.5, min_area=64, merge_distance=0,
-              connectivity=8, sort_by="area_desc"):
+    # connectivity / merge_distance : defauts figes (non exposes en widget)
+    def split(self, mask, threshold=0.5, min_area=64, sort_by="area_desc",
+              merge_distance=0, connectivity=8):
         # MASK comfy : (H,W) ou (B,H,W) -> on prend le 1er
         m = mask
         if m.dim() == 3:
