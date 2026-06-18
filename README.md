@@ -265,8 +265,6 @@ Splits **one hand-drawn mask** into **N separate masks**, one per disconnected b
 | mask | MASK | The single hand-drawn mask (may contain several disconnected blobs) |
 | threshold | FLOAT | Binarisation of the drawn mask. Default `0.5` |
 | min_area | INT | Ignore blobs smaller than this many pixels (anti stray-dots). Default `64` |
-| merge_distance | INT | Dilate before labelling to merge nearby strokes into one region. Default `0` (strict). *Advanced — 0 suits most cases.* |
-| connectivity | dropdown | `8` = diagonals count (permissive, default) · `4` = orthogonal only (corner-touching blobs stay separate). *Advanced — `8` is right for almost all hand-drawn masks.* |
 | sort_by | dropdown | `area_desc` (default, largest first) · `area_asc` · `top_to_bottom` · `left_to_right` |
 
 **Outputs**
@@ -280,7 +278,7 @@ Splits **one hand-drawn mask** into **N separate masks**, one per disconnected b
 ImageToMask → ✂️ Mask Split Regions → (switch) → MaskBoundingBox+ → BBox Multiple Fix → … per-region inpaint
 ```
 
-> **Tip — exposing in a subgraph:** keep `threshold`, `min_area` and `sort_by` visible; you can safely **hide** `connectivity` and `merge_distance` (the eye icon in *Edit Subgraph Widgets*) since their defaults (`8` / `0`) suit the vast majority of cases. Hiding the `connectivity` combo also avoids the red-outline glitch that ComfyUI currently shows for combo widgets published inside a subgraph.
+> **Only three widgets are exposed** — `threshold`, `min_area`, `sort_by`. Two parameters are kept as fixed defaults in the node code to keep the canvas clean: `connectivity = 8` (diagonals count — correct for virtually all hand-drawn masks) and `merge_distance = 0` (no stroke merging). Edit `mask_split_regions.py` if you ever need to change them.
 
 ---
 
