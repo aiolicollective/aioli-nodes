@@ -1,6 +1,6 @@
 # Aioli Nodes — ComfyUI Custom Node Suite
 
-Three utility nodes for outpainting and inpainting in ComfyUI — plus four ready-to-run example workflows, including three that work out-of-the-box on **ComfyUI Cloud** (no install required).
+Seven nodes for outpainting, inpainting and **multi-region** (SAM3 or hand-drawn) editing in ComfyUI — plus ready-to-run example workflows, including three that work out-of-the-box on **ComfyUI Cloud** (no install required).
 
 ---
 
@@ -33,7 +33,7 @@ https://github.com/aiolicollective/aioli-nodes
 2. Restart ComfyUI
 3. The nodes appear under the **Aioli Nodes** category
 
-No extra dependencies — only `math` (Python stdlib), `torch` and `Pillow` (already bundled with ComfyUI).
+No extra dependencies — only `math` (Python stdlib), `torch`, `numpy`, `scipy` and `Pillow` (all already bundled with ComfyUI).
 
 ---
 
@@ -178,6 +178,109 @@ Corrects colorimetric drift introduced by the generation — selectively applies
 BBoxMultipleFix
   └── image_cropped → KSampler → VAEDecode → 🎨 InpaintColorFix → ImageResize+ → ImageCompositeMasked
 ```
+
+---
+
+## 🧩 BBox Multiple Assembler
+
+Multi-region recompose — the list-aware successor to `ImageCompositeMasked`. Stitches a **list of N inpainted crops** back onto a single base image, each at its own bbox, with per-layer mask growth, feathering, opacity and z-ordering. Used when several masked regions (SAM3 masks, or hand-drawn blobs split by **Mask Split Regions**) are each cropped, enhanced separately in the KSampler, then merged. `INPUT_IS_LIST` — maps over the N crops/masks/coords automatically.
+
+**Key behaviour:** `mask_adjust` operates on the **full image canvas** (image-bounded, not crop-bounded), so a region can be grown/shrunk *after* generation without re-running the sampler. Compositing happens only inside each crop rectangle — where a grown mask spills past the crop, the layer below shows through (true per-hierarchy transparency), never an imposed base-image overwrite. Separable grow/feather + downscale keep it fast even at large radii.
+
+**Inputs**
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| base_image | IMAGE | Full-resolution untouched source |
+| crops | IMAGE (list) | The N enhanced crops |
+| masks | MASK (list) | The N per-region masks |
+| x / y | INT (list) | Top-left of each crop in the source |
+| width / height | INT (list) | Size of each crop |
+| order | dropdown | `list_first_on_top` (last list item = bottom layer → put the background mask last) · `area_large_under` (large zones under, auto) |
+| mask_adjust | INT | Grow (+) / shrink (−) each mask on the full canvas. Default `0` |
+| feather | INT | Gaussian edge softening. Default `8` |
+| opacity | FLOAT | Per-layer opacity. Default `1.0` |
+| debug_outline | BOOLEAN | Draw a coloured contour per region in `checker`. Default `True` |
+
+**Outputs**
+| Output | Type | Description |
+|--------|------|-------------|
+| image | IMAGE | Final recomposed image |
+| combined_mask | MASK | Union of all composited regions |
+| checker | IMAGE | Debug view with coloured region outlines |
+
+> Proven byte-identical to `ImageCompositeMasked` for a single region with `feather = 0, mask_adjust = 0`.
+
+---
+
+## 🧱 Region Mask List
+
+Prepares the **list of regional masks** for a SAM3 multi-region pipeline. Takes the N SAM3 masks (batch *or* list), flattens them into a clean full-size list in the received order, and optionally appends a **background mask** (the inverse of the union of all masks) as the **last** element. `INPUT_IS_LIST` · `OUTPUT_IS_LIST = (True, False, False)`.
+
+The last element being the background pairs with **BBox Multiple Assembler**'s `list_first_on_top` ordering (last = bottom layer), so the background stays under the objects. The same list feeds `MaskBoundingBox+` (per-region crop + coords), the per-region Gemma caption, the KSampler (N passes) and **Regional Mask Conditioning**.
+
+**Inputs**
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| masks | MASK (batch/list) | The SAM3 masks |
+| add_background | BOOLEAN | Append the inverse-union background mask last. Default `True` |
+| threshold | FLOAT | Binarisation cutoff used **only** to compute the background (inverse union). No effect on the object masks, and none at all when `add_background = False`. Default `0.5` |
+| min_bg_area | FLOAT | Skip the background if it covers less than this fraction of the image. Default `0.0` |
+
+**Outputs**
+| Output | Type | Description |
+|--------|------|-------------|
+| masks | MASK (list) | The N (+1) regional masks |
+| background_mask | MASK | The computed inverse-union background |
+| count | INT | Number of layers out |
+
+---
+
+## 🗺️ Regional Mask Conditioning
+
+Folds a **list of (conditioning, mask)** pairs into a **single regional conditioning** for a one-pass KSampler generation (regional prompting, TTP-style — except the "tiles" are your SAM3 / hand-drawn masks). Each `(caption_i, mask_i)` becomes a `Conditioning (Set Mask)` and all are concatenated — ComfyUI can't fold a dynamic list of N on its own, this node does it for any N. **Broadcast:** supply a single conditioning for N masks and it is applied to every region (handy for a single prompt / debugging). `INPUT_IS_LIST`.
+
+**Inputs**
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| conditioning | CONDITIONING (list) | One per region, or a single one to broadcast to all |
+| masks | MASK (list) | The regional masks |
+| strength | FLOAT | `mask_strength` per region. Default `1.0` |
+| set_area_to_bounds | BOOLEAN | Restrict each region's area to its mask bounds. Default `False` |
+
+**Outputs**
+| Output | Type | Description |
+|--------|------|-------------|
+| conditioning | CONDITIONING | The combined regional conditioning |
+| covered_mask | MASK | Union of all region masks (debug) |
+
+---
+
+## ✂️ Mask Split Regions
+
+Splits **one hand-drawn mask** into **N separate masks**, one per disconnected blob (connected-component labelling). Each painted region then gets its own bbox / crop / prompt — manual multi-region inpaint, exactly like SAM3 but **keyword-free**. A single connected blob → 1 mask (identical to a normal single-region inpaint). Output is a **list**, so it drops straight into `MaskBoundingBox+` / **BBox Multiple Fix**, which map over it. Uses `scipy.ndimage` — already bundled with ComfyUI, no install. `OUTPUT_IS_LIST = (True, False)`.
+
+**Inputs**
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| mask | MASK | The single hand-drawn mask (may contain several disconnected blobs) |
+| threshold | FLOAT | Binarisation of the drawn mask. Default `0.5` |
+| min_area | INT | Ignore blobs smaller than this many pixels (anti stray-dots). Default `64` |
+| merge_distance | INT | Dilate before labelling to merge nearby strokes into one region. Default `0` (strict). *Advanced — 0 suits most cases.* |
+| connectivity | dropdown | `8` = diagonals count (permissive, default) · `4` = orthogonal only (corner-touching blobs stay separate). *Advanced — `8` is right for almost all hand-drawn masks.* |
+| sort_by | dropdown | `area_desc` (default, largest first) · `area_asc` · `top_to_bottom` · `left_to_right` |
+
+**Outputs**
+| Output | Type | Description |
+|--------|------|-------------|
+| masks | MASK (list) | One full-size mask per detected region |
+| count | INT | Number of regions found |
+
+**Position in workflow (manual branch)**
+```
+ImageToMask → ✂️ Mask Split Regions → (switch) → MaskBoundingBox+ → BBox Multiple Fix → … per-region inpaint
+```
+
+> **Tip — exposing in a subgraph:** keep `threshold`, `min_area` and `sort_by` visible; you can safely **hide** `connectivity` and `merge_distance` (the eye icon in *Edit Subgraph Widgets*) since their defaults (`8` / `0`) suit the vast majority of cases. Hiding the `connectivity` combo also avoids the red-outline glitch that ComfyUI currently shows for combo widgets published inside a subgraph.
 
 ---
 
