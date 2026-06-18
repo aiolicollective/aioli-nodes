@@ -239,19 +239,25 @@ The last element being the background pairs with **BBox Multiple Assembler**'s `
 
 Folds a **list of (conditioning, mask)** pairs into a **single regional conditioning** for a one-pass KSampler generation (regional prompting, TTP-style — except the "tiles" are your SAM3 / hand-drawn masks). Each `(caption_i, mask_i)` becomes a `Conditioning (Set Mask)` and all are concatenated — ComfyUI can't fold a dynamic list of N on its own, this node does it for any N. **Broadcast:** supply a single conditioning for N masks and it is applied to every region (handy for a single prompt / debugging). `INPUT_IS_LIST`.
 
+**Optional global layer.** Connect a `base_conditioning` — a prompt describing the **whole image** — and it is applied over the full frame, blended with the regional prompts via `base_strength` (its `mask_strength`). Inside a region the pixel gets a weighted mix of `base_strength` (global) vs `strength` (region); outside every region the global applies alone. Leave `base_strength = 0` or the input unconnected for pure regional behaviour (unchanged). The blend happens at the sampler level via `mask_strength`, so prompts of different lengths mix cleanly — no tensor interpolation.
+
 **Inputs**
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | conditioning | CONDITIONING (list) | One per region, or a single one to broadcast to all |
 | masks | MASK (list) | The regional masks |
 | strength | FLOAT | `mask_strength` per region. Default `1.0` |
-| set_area_to_bounds | BOOLEAN | Restrict each region's area to its mask bounds. Default `False` |
+| set_area_to_bounds | BOOLEAN | Restrict each region's compute to its mask bbox — **faster** when regions are small. Default `False` |
+| base_conditioning *(optional)* | CONDITIONING | A global prompt describing the whole image, blended over the regions |
+| base_strength | FLOAT | Weight of the global layer (its `mask_strength`). `0` = no global. Default `0.5` |
 
 **Outputs**
 | Output | Type | Description |
 |--------|------|-------------|
-| conditioning | CONDITIONING | The combined regional conditioning |
+| conditioning | CONDITIONING | The combined regional (+ optional global) conditioning |
 | covered_mask | MASK | Union of all region masks (debug) |
+
+> **Performance.** Regional conditioning is inherently ~N× slower than a single global prompt: the sampler runs one model forward pass per distinct masked prompt, per step (N regions + the optional global = N+1 passes). With DyPE at high resolution each pass is costly, so keep the region count down and set `set_area_to_bounds = True` to limit each region's compute to its bounding box.
 
 ---
 
