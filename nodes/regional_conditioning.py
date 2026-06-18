@@ -3,21 +3,23 @@ import torch
 
 class RegionalMaskConditioning:
     """
-    Replie une LISTE de (conditioning, masque) en UN seul conditioning regional,
-    pour une generation en UNE seule passe KSampler (mode "tiles = 1" + DyPE).
+    Replie une LISTE de (conditioning, masque) en UN conditioning regional pour
+    une generation en UNE passe KSampler (mode "tiles=1" + DyPE). Chaque paire
+    (caption_i, masque_i) devient un 'Conditioning (Set Mask)', le tout concatene.
 
-    Modele mental : c'est le regional facon TTP, sauf que les "tuiles" sont les
-    masques SAM3 (+ le masque de fond inverse, deja dans la liste si tu l'as
-    active dans RegionMaskList). Chaque paire (caption_i, masque_i) devient un
-    'Conditioning (Set Mask)' ; le tout est concatene. ComfyUI ne sait pas
-    combiner une liste dynamique de N -> ce node le fait pour un N quelconque.
+    >>> COUCHE GLOBALE OPTIONNELLE (v1.4) <<<
+    'base_conditioning' = un prompt qui decrit l'IMAGE ENTIERE. Il est applique
+    sur toute la surface (masque plein) et MELANGE aux regions via 'base_strength'
+    (= son mask_strength). En zone : le pixel recoit un melange pondere
+    base_strength (global) vs strength (region). Hors region (si pas de fond) :
+    le global seul. base_strength=0 OU base non branche -> regional pur, identique
+    a avant. Le melange se fait au niveau du sampler (mask_strength) -> pas de lerp
+    de tenseurs, compatible avec des prompts de longueurs differentes.
 
-    Le FOND n'a plus de traitement special : il est juste le dernier masque de
-    la liste (l'inverse de l'union), avec son propre caption Gemma. Plus simple.
+    Cout : le global ajoute +1 forward pass / step (1 region de plus). Pour la
+    vitesse, 'set_area_to_bounds' limite chaque region a sa bbox.
 
-    BROADCAST : si tu ne fournis qu'UN seul conditioning pour N masques, il est
-    applique a toutes les regions (pratique pour debug / prompt unique).
-
+    BROADCAST : 1 seul conditioning pour N masques -> applique a toutes les regions.
     INPUT_IS_LIST = True.
     """
 
@@ -33,6 +35,8 @@ class RegionalMaskConditioning:
             "optional": {
                 "strength":           ("FLOAT",   {"default": 1.0, "min": 0.0, "max": 10.0, "step": 0.01}),
                 "set_area_to_bounds": ("BOOLEAN", {"default": False}),
+                "base_conditioning":  ("CONDITIONING",),
+                "base_strength":      ("FLOAT",   {"default": 0.5, "min": 0.0, "max": 10.0, "step": 0.01}),
             },
         }
 
@@ -54,9 +58,11 @@ class RegionalMaskConditioning:
             out.append([t[0], d])
         return out
 
-    def combine(self, conditioning, masks, strength=None, set_area_to_bounds=None):
+    def combine(self, conditioning, masks, strength=None, set_area_to_bounds=None,
+                base_conditioning=None, base_strength=None):
         strength           = float((strength or [1.0])[0])
         set_area_to_bounds = bool((set_area_to_bounds or [False])[0])
+        base_strength      = float((base_strength or [0.5])[0])
 
         nC, nM = len(conditioning), len(masks)
         if nC == 0 or nM == 0:
@@ -77,6 +83,18 @@ class RegionalMaskConditioning:
             cond_i = conditioning[0] if broadcast else conditioning[i]
             result += self._set_mask(cond_i, m, strength, set_area_to_bounds)
 
+        # couche globale optionnelle (prompt image entiere), melangee via base_strength
+        base_added = 0
+        if base_conditioning and base_strength > 0.0 and covered is not None:
+            base_flat = [t for c in base_conditioning for t in c]
+            if base_flat:
+                H, W = covered.shape[-2], covered.shape[-1]
+                full = torch.ones((H, W), dtype=torch.float32)
+                result = self._set_mask(base_flat, full, base_strength, False) + result
+                base_added = len(base_flat)
+
         print(f"[RegionalMaskConditioning] {n} regions"
-              f"{' (broadcast 1->N)' if broadcast else ''} -> {len(result)} tokens")
+              f"{' (broadcast 1->N)' if broadcast else ''}"
+              f"{f' + base global x{base_strength}' if base_added else ''}"
+              f" -> {len(result)} tokens")
         return (result, covered.unsqueeze(0))
