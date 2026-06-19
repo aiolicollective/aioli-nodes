@@ -199,7 +199,6 @@ Multi-region recompose — the list-aware successor to `ImageCompositeMasked`. S
 | mask_adjust | INT | Grow (+) / shrink (−) each mask on the full canvas. Default `0` |
 | feather | INT | Gaussian edge softening. Default `8` |
 | opacity | FLOAT | Per-layer opacity. Default `1.0` |
-| debug_outline | BOOLEAN | Draw a coloured contour per region in `checker`. Default `True` |
 
 **Outputs**
 | Output | Type | Description |
@@ -207,6 +206,8 @@ Multi-region recompose — the list-aware successor to `ImageCompositeMasked`. S
 | image | IMAGE | Final recomposed image |
 | combined_mask | MASK | Union of all composited regions |
 | checker | IMAGE | Debug view with coloured region outlines |
+
+> The `checker` outline is always drawn (frozen internally, not exposed as a widget) — turning it off only made `checker` a duplicate of `image`.
 
 > Proven byte-identical to `ImageCompositeMasked` for a single region with `feather = 0, mask_adjust = 0`.
 
@@ -216,7 +217,7 @@ Multi-region recompose — the list-aware successor to `ImageCompositeMasked`. S
 
 Preview — **before any generation** — exactly what **BBox Multiple Assembler** only outputs at the very end. Branch it as a **side-channel** right after **Region Mask List** or **Mask Split Regions**; it never touches the list pipeline that already works. It reuses the assembler's **exact math** (the same imported `_grow_shrink_fast` / `_feather_fast` / `_resize_mask` / `_PALETTE` helpers), so **the preview equals the final render**.
 
-It also doubles as a **single tuning point**: set `order` / `mask_adjust` / `feather` / `opacity` here, look at the result, then wire those same outputs straight back into **BBox Multiple Assembler** (convert its widgets to inputs). `INPUT_IS_LIST` — maps over the mask list like the assembler; singletons taken at `[0]`.
+It also doubles as a **single tuning point**: set `mask_adjust` / `feather` / `opacity` here, look at the result, then wire those same outputs straight back into **BBox Multiple Assembler** (convert its widgets to inputs). `INPUT_IS_LIST` — maps over the mask list like the assembler; singletons taken at `[0]`.
 
 Masks are full-size (the usual output of Region Mask List / Mask Split Regions, already positioned on the canvas), so no coordinates are needed.
 
@@ -228,7 +229,6 @@ Masks are full-size (the usual output of Region Mask List / Mask Split Regions, 
 | mask_adjust | INT | Grow (+) / shrink (−) each mask on the full canvas. Default `0` |
 | feather | INT | Gaussian edge softening. Default `8` |
 | opacity | FLOAT | Per-layer opacity. Default `1.0` |
-| debug_outline | BOOLEAN | Draw a coloured contour + light fill per region in `checker`. Default `True` |
 
 **Outputs**
 | Output | Type | Description |
@@ -245,7 +245,7 @@ Region Mask List ──┬─→ … per-region crop → KSampler → BBox Multi
                    └─→ 👁 Region Preview                                         (side branch — visualise before generating)
 ```
 
-> **Re-wiring back into the assembler.** `mask_adjust` (INT), `feather` (INT) and `opacity` (FLOAT) wire cleanly into the assembler's matching inputs (convert its widgets to inputs). `order` is not exposed here — ComfyUI can't link a node output into a combo input, and order doesn't change the preview — so set it directly on the assembler.
+> **Re-wiring back into the assembler.** `mask_adjust` (INT), `feather` (INT) and `opacity` (FLOAT) wire cleanly into the assembler's matching inputs (convert its widgets to inputs). `order` is not exposed here — ComfyUI can't link a node output into a combo input, and order doesn't change the preview — so set it directly on the assembler. The debug outline is always on (frozen, not exposed) — without it the `checker` would show nothing.
 
 ---
 
@@ -383,12 +383,38 @@ The nano-banana example uses `LoadImageOutput`, which works out-of-the-box on Co
 
 ---
 
-## 🔁 Example Workflow — Flux2Klein (custom-nodes version)
+## 🔁 Example Workflow — Multi-region edit (Flux.2 Klein)
 
-> **[⬇ Download workflow JSON](examples/WF_Inpaint_aioli-nodes.json)**
+> **[⬇ Download workflow JSON](examples/aioli_INPAINT_Img_Flux2_Klein_multi-region-edit.json)**
 
-A complete, ready-to-use inpaint workflow for **Flux2Klein** (9B), packaged as a ComfyUI subgraph (`FLUX2KLEIN_INPAINT`).  
-This is the **custom-nodes version** — uses `BBoxMultipleFix` and `InpaintColorFix` directly. For a no-install alternative, see the [ComfyCloud workflows](#️-comfycloud-compatible-workflows-no-install-required) above.
+A complete **multi-region** inpaint workflow for **Flux.2 Klein** (9B) that exercises most of this repo's inpaint nodes at once: several masked regions are each cropped, prompted and denoised **independently**, then recomposed pixel-perfectly onto the untouched source. Regions can come from **SAM3** masks or from a single hand-drawn mask split by **✂️ Mask Split Regions** — either way they flow through **🧱 Region Mask List**, get cropped by **📐 BBox Multiple Fix**, enhanced per region in the KSampler, colour-matched by **🎨 Inpaint Color Fix**, and merged by **🧩 BBox Multiple Assembler**. **👁 Region Preview** lets you check the layout *before* generating.
+
+**Regions → mask → recompose**
+
+The assembler's `checker` shows each region outlined in its own colour, `combined_mask` is the union of all regions, and the final `image` is the recomposed result — every region stitched back at its exact coordinates with no seam or colour drift.
+
+![Multi-region checker — each region outlined](examples/IMG_Inpaint_aioli-nodes_Flux2Klein_multi-region-edit_checker.png)
+
+*`checker` — each masked region outlined in its own colour (also previewable up-front with 👁 Region Preview).*
+
+![Multi-region combined mask](examples/IMG_Inpaint_aioli-nodes_Flux2Klein_multi-region-edit_combined_mask.png)
+
+*`combined_mask` — the union of all region masks, with `mask_adjust` / `feather` applied.*
+
+![Multi-region recomposed result](examples/IMG_Inpaint_aioli-nodes_Flux2Klein_multi-region-edit_recomposed.png)
+
+*Final `image` — each region enhanced independently, recomposed pixel-perfectly onto the source.*
+
+**Pipeline**
+```
+Load Image (+ SAM3 masks  OR  hand-drawn mask → ✂️ Mask Split Regions)
+  └→ 🧱 Region Mask List                (clean list + optional background, last)
+        ├─→ 👁 Region Preview            (side branch — combined_mask / checker before generating)
+        └─→ MaskBoundingBox+ → 📐 BBox Multiple Fix     (per-region crop + coords, Flux-friendly, anti-clamp)
+              └→ VAE Encode → KSampler   (N passes, one per region, per-region prompt)
+                    └→ VAE Decode → 🎨 Inpaint Color Fix       (selective LAB colour match)
+                          └→ 🧩 BBox Multiple Assembler         (recompose N crops → image / combined_mask / checker)
+```
 
 **Required models**
 | Role | File |
@@ -397,45 +423,14 @@ This is the **custom-nodes version** — uses `BBoxMultipleFix` and `InpaintColo
 | VAE | `flux2/flux2-vae.safetensors` |
 | Text encoder | `qwen_3_8b_fp8mixed.safetensors` |
 
-**Required custom nodes**
-- **Aioli Nodes** (this repo) — `BBoxMultipleFix`, `InpaintColorFix`
-- **ComfyUI Essentials** — `MaskBoundingBox+`, `ImageResize+`
-- **ComfyUI KJNodes** — `GrowMaskWithBlur`
-- **rgthree-comfy** — `Image Comparer` (optional, for before/after preview)
-
-**Subgraph inputs**
-| Input | Description |
-|-------|-------------|
-| IMAGE | Source image (with painted mask) |
-| MASK | Inpaint mask |
-| Resize_Megapixels | Working resolution in megapixels (default: 4) |
-| PROMPT | Inpaint prompt |
-| Resize_Inpaint_Target | BBox target size (`none` · `512` · `768` · `1024` · `1536` · `2048`) |
-
-**Internal pipeline**
-```
-LoadImageOutput (with mask painter)
-  └→ FLUX2KLEIN_INPAINT subgraph
-        ├── ImageScaleToTotalPixels   (resize source to working MP)
-        ├── MaskBoundingBox+          (detect mask region)
-        ├── BBoxMultipleFix           (crop + scale for Flux, anti-clamp, cap 2048px)
-        ├── GrowMaskWithBlur          (soften mask edges)
-        ├── VAEEncode × 2 + SetLatentNoiseMask
-        ├── CLIPTextEncode → ReferenceLatent → FluxGuidance
-        ├── Flux2Scheduler + KSamplerSelect + RandomNoise
-        ├── SamplerCustomAdvanced
-        ├── VAEDecode
-        ├── InpaintColorFix           (selective LAB color match)
-        ├── ImageResize+              (resize back to orig_width × orig_height)
-        └── ImageCompositeMasked      (stitch result onto source)
-  └→ SaveImage + Image Comparer (before / after)
-```
+**Aioli nodes showcased**
+`MaskSplitRegions` · `RegionMaskList` · `BBoxMultipleFix` · `InpaintColorFix` · `BBoxMultipleAssembler` · `RegionPreview` — plus **ComfyUI Essentials** (`MaskBoundingBox+`, `ImageResize+`) and **ComfyUI KJNodes** (`GrowMaskWithBlur`).
 
 **Usage**
 1. Download the JSON and drag it into ComfyUI
-2. Point `LoadImageOutput` to your image and paint your mask
-3. Set your prompt and target resolution in the subgraph inputs
-4. Run — the result is composited pixel-perfectly back onto the source image
+2. Provide your image and either SAM3 masks or a hand-drawn mask (split automatically into regions)
+3. Give each region its own prompt
+4. Run — every region is enhanced on its own and recomposed pixel-perfectly onto the source
 
 ---
 
