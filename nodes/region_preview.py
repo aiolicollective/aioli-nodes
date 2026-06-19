@@ -23,6 +23,9 @@ class RegionPreview:
     pas la preview, c'est juste l'ordre de superposition au compositing final).
     La preview = le rendu final car on réutilise la maths de l'assembler.
 
+    Le contour de debug est TOUJOURS dessiné (figé, non exposé) : sans lui le
+    checker n'afficherait que l'image de base nue.
+
     Les masques attendus sont pleine-taille (sortie habituelle de Region Mask List
     / Mask Split Regions), donc aucune coordonnée n'est nécessaire.
 
@@ -39,10 +42,9 @@ class RegionPreview:
                 "masks":      ("MASK",),
             },
             "optional": {
-                "mask_adjust":   ("INT",     {"default": 0,   "min": -512, "max": 512}),
-                "feather":       ("INT",     {"default": 8,   "min": 0,    "max": 512}),
-                "opacity":       ("FLOAT",   {"default": 1.0, "min": 0.0,  "max": 1.0, "step": 0.01}),
-                "debug_outline": ("BOOLEAN", {"default": True}),
+                "mask_adjust": ("INT",   {"default": 0,   "min": -512, "max": 512}),
+                "feather":     ("INT",   {"default": 8,   "min": 0,    "max": 512}),
+                "opacity":     ("FLOAT", {"default": 1.0, "min": 0.0,  "max": 1.0, "step": 0.01}),
             },
         }
 
@@ -52,7 +54,7 @@ class RegionPreview:
     CATEGORY     = "Aioli Nodes"
 
     def preview(self, base_image, masks,
-                mask_adjust=None, feather=None, opacity=None, debug_outline=None):
+                mask_adjust=None, feather=None, opacity=None):
 
         base = base_image[0]
         if base.dim() == 4:
@@ -60,10 +62,10 @@ class RegionPreview:
         base = base.clone().float()
         H, W, C = base.shape
 
-        mask_adjust   = int((mask_adjust or [0])[0])
-        feather       = int((feather or [8])[0])
-        opacity       = float((opacity or [1.0])[0])
-        debug_outline = bool((debug_outline or [True])[0])
+        mask_adjust = int((mask_adjust or [0])[0])
+        feather     = int((feather or [8])[0])
+        opacity     = float((opacity or [1.0])[0])
+        debug_outline = True  # figé : sans le contour le checker n'afficherait rien
 
         n = len(masks)
         combined = torch.zeros((H, W), dtype=torch.float32)

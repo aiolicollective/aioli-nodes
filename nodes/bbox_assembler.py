@@ -100,7 +100,8 @@ class BBoxMultipleAssembler:
         est dessous. -> mets le masque de FOND (inverse de l'union) en DERNIER.
       * 'area_large_under'  : grandes zones dessous, petites dessus (auto).
 
-    'checker' : contour colore de chaque zone pour verifier la superposition.
+    'checker' : contour colore de chaque zone pour verifier la superposition
+    (toujours dessine ; non expose).
     """
 
     INPUT_IS_LIST = True
@@ -118,11 +119,10 @@ class BBoxMultipleAssembler:
                 "height":     ("INT", {"forceInput": True}),
             },
             "optional": {
-                "order":         (["list_first_on_top", "area_large_under"],),
-                "mask_adjust":   ("INT",     {"default": 0,   "min": -512, "max": 512}),
-                "feather":       ("INT",     {"default": 8,   "min": 0, "max": 512}),
-                "opacity":       ("FLOAT",   {"default": 1.0, "min": 0.0, "max": 1.0, "step": 0.01}),
-                "debug_outline": ("BOOLEAN", {"default": True}),
+                "order":       (["list_first_on_top", "area_large_under"],),
+                "mask_adjust": ("INT",   {"default": 0,   "min": -512, "max": 512}),
+                "feather":     ("INT",   {"default": 8,   "min": 0, "max": 512}),
+                "opacity":     ("FLOAT", {"default": 1.0, "min": 0.0, "max": 1.0, "step": 0.01}),
             },
         }
 
@@ -132,7 +132,7 @@ class BBoxMultipleAssembler:
     CATEGORY     = "Aioli Nodes"
 
     def assemble(self, base_image, crops, masks, x, y, width, height,
-                 order=None, mask_adjust=None, feather=None, opacity=None, debug_outline=None):
+                 order=None, mask_adjust=None, feather=None, opacity=None):
 
         base = base_image[0]
         if base.dim() == 4:
@@ -144,7 +144,7 @@ class BBoxMultipleAssembler:
         mask_adjust   = int((mask_adjust or [0])[0])
         feather       = int((feather or [8])[0])
         opacity       = float((opacity or [1.0])[0])
-        debug_outline = bool((debug_outline or [True])[0])
+        debug_outline = True  # fige : le checker est toujours annote (sinon == image)
 
         n = min(len(crops), len(masks), len(x), len(y), len(width), len(height))
         canvas   = base.clone()
