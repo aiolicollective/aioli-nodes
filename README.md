@@ -1,6 +1,6 @@
 # Aioli Nodes — ComfyUI Custom Node Suite
 
-Seven nodes for outpainting, inpainting and **multi-region** (SAM3 or hand-drawn) editing in ComfyUI — plus ready-to-run example workflows, including three that work out-of-the-box on **ComfyUI Cloud** (no install required).
+Eight nodes for outpainting, inpainting and **multi-region** (SAM3 or hand-drawn) editing in ComfyUI — plus ready-to-run example workflows, including three that work out-of-the-box on **ComfyUI Cloud** (no install required).
 
 ---
 
@@ -209,6 +209,47 @@ Multi-region recompose — the list-aware successor to `ImageCompositeMasked`. S
 | checker | IMAGE | Debug view with coloured region outlines |
 
 > Proven byte-identical to `ImageCompositeMasked` for a single region with `feather = 0, mask_adjust = 0`.
+
+---
+
+## 👁 Region Preview
+
+Preview — **before any generation** — exactly what **BBox Multiple Assembler** only outputs at the very end. Branch it as a **side-channel** right after **Region Mask List** or **Mask Split Regions**; it never touches the list pipeline that already works. It reuses the assembler's **exact math** (the same imported `_grow_shrink_fast` / `_feather_fast` / `_resize_mask` / `_PALETTE` helpers), so **the preview equals the final render**.
+
+It also doubles as a **single tuning point**: set `order` / `mask_adjust` / `feather` / `opacity` here, look at the result, then wire those same outputs straight back into **BBox Multiple Assembler** (convert its widgets to inputs). `INPUT_IS_LIST` — maps over the mask list like the assembler; singletons taken at `[0]`.
+
+**Full-size masks** (the usual output of Region Mask List / Mask Split Regions) need **no coordinates**. If you do feed `x` / `y` / `width` / `height` (from **BBox Multiple Fix**), the masks are treated as crops and placed at their coordinates.
+
+**Inputs**
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| base_image | IMAGE | The base image to preview the regions on |
+| masks | MASK (list) | The regional masks — full-size, or crops if coords are supplied |
+| x / y *(optional)* | INT (forceInput) | Top-left of each crop — only when masks are crops (BBox Multiple Fix) |
+| width / height *(optional)* | INT (forceInput) | Size of each crop — only when masks are crops |
+| order | dropdown | `list_first_on_top` · `area_large_under` — passed straight through (STRING) to the assembler |
+| mask_adjust | INT | Grow (+) / shrink (−) each mask on the full canvas. Default `0` |
+| feather | INT | Gaussian edge softening. Default `8` |
+| opacity | FLOAT | Per-layer opacity. Default `1.0` |
+| debug_outline | BOOLEAN | Draw a coloured contour + light fill per region in `checker`. Default `True` |
+
+**Outputs**
+| Output | Type | Description |
+|--------|------|-------------|
+| combined_mask | MASK | Union of all masks with `mask_adjust` / `feather` / `opacity` applied **exactly like the assembler** |
+| checker | IMAGE | Base image + per-region coloured outline & light fill, to see what you're working on |
+| mask_adjust | INT | Pass-through — rewire into BBox Multiple Assembler |
+| feather | INT | Pass-through — rewire into BBox Multiple Assembler |
+| opacity | FLOAT | Pass-through — rewire into BBox Multiple Assembler |
+| order | STRING | Pass-through — rewire into BBox Multiple Assembler (see note) |
+
+**Position in workflow (side branch)**
+```
+Region Mask List ──┬─→ … per-region crop → KSampler → BBox Multiple Assembler   (main list pipeline, untouched)
+                   └─→ 👁 Region Preview                                         (side branch — visualise before generating)
+```
+
+> **Re-wiring back into the assembler.** `mask_adjust` (INT), `feather` (INT) and `opacity` (FLOAT) wire cleanly into the assembler's matching inputs. `order` comes out as **STRING**; if the assembler's combo-as-input refuses the STRING link, just leave `order` as a widget set **identically on both sides**.
 
 ---
 
