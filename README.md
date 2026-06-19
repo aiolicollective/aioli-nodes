@@ -218,16 +218,13 @@ Preview — **before any generation** — exactly what **BBox Multiple Assembler
 
 It also doubles as a **single tuning point**: set `order` / `mask_adjust` / `feather` / `opacity` here, look at the result, then wire those same outputs straight back into **BBox Multiple Assembler** (convert its widgets to inputs). `INPUT_IS_LIST` — maps over the mask list like the assembler; singletons taken at `[0]`.
 
-**Full-size masks** (the usual output of Region Mask List / Mask Split Regions) need **no coordinates**. If you do feed `x` / `y` / `width` / `height` (from **BBox Multiple Fix**), the masks are treated as crops and placed at their coordinates.
+Masks are full-size (the usual output of Region Mask List / Mask Split Regions, already positioned on the canvas), so no coordinates are needed.
 
 **Inputs**
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | base_image | IMAGE | The base image to preview the regions on |
-| masks | MASK (list) | The regional masks — full-size, or crops if coords are supplied |
-| x / y *(optional)* | INT (forceInput) | Top-left of each crop — only when masks are crops (BBox Multiple Fix) |
-| width / height *(optional)* | INT (forceInput) | Size of each crop — only when masks are crops |
-| order | dropdown | `list_first_on_top` · `area_large_under` — passed straight through (STRING) to the assembler |
+| masks | MASK (list) | The regional masks (full-size) |
 | mask_adjust | INT | Grow (+) / shrink (−) each mask on the full canvas. Default `0` |
 | feather | INT | Gaussian edge softening. Default `8` |
 | opacity | FLOAT | Per-layer opacity. Default `1.0` |
@@ -241,7 +238,6 @@ It also doubles as a **single tuning point**: set `order` / `mask_adjust` / `fea
 | mask_adjust | INT | Pass-through — rewire into BBox Multiple Assembler |
 | feather | INT | Pass-through — rewire into BBox Multiple Assembler |
 | opacity | FLOAT | Pass-through — rewire into BBox Multiple Assembler |
-| order | STRING | Pass-through — rewire into BBox Multiple Assembler (see note) |
 
 **Position in workflow (side branch)**
 ```
@@ -249,7 +245,7 @@ Region Mask List ──┬─→ … per-region crop → KSampler → BBox Multi
                    └─→ 👁 Region Preview                                         (side branch — visualise before generating)
 ```
 
-> **Re-wiring back into the assembler.** `mask_adjust` (INT), `feather` (INT) and `opacity` (FLOAT) wire cleanly into the assembler's matching inputs. `order` comes out as **STRING**; if the assembler's combo-as-input refuses the STRING link, just leave `order` as a widget set **identically on both sides**.
+> **Re-wiring back into the assembler.** `mask_adjust` (INT), `feather` (INT) and `opacity` (FLOAT) wire cleanly into the assembler's matching inputs (convert its widgets to inputs). `order` is not exposed here — ComfyUI can't link a node output into a combo input, and order doesn't change the preview — so set it directly on the assembler.
 
 ---
 
