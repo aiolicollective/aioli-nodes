@@ -9,7 +9,7 @@ class RegionPreview:
 
     À brancher juste après Region Mask List ou Mask Split Regions (branche
     latérale : ne touche pas au pipeline liste). Prend l'image de base + la LISTE
-    des masques et restitue, AVANT toute génération :
+    des masques pleine-taille et restitue, AVANT toute génération :
       - combined_mask : union des masques (mask_adjust / feather / opacity
                         appliqués EXACTEMENT comme l'assembler) ;
       - checker       : l'image de base + contour & léger remplissage colorés par
@@ -20,9 +20,8 @@ class RegionPreview:
     BBoxMultipleAssembler (convertis ses widgets en entrées). La preview = le rendu
     final car on réutilise la maths de l'assembler (helpers importés).
 
-    Masques pleine-taille (sortie habituelle de Region Mask List / Mask Split
-    Regions) : aucun coord requis. Si tu fournis x/y/width/height (BBoxMultipleFix),
-    les masques sont traités comme des crops et placés à leurs coordonnées.
+    Les masques attendus sont pleine-taille (sortie habituelle de Region Mask List
+    / Mask Split Regions), donc aucune coordonnée n'est nécessaire.
 
     INPUT_IS_LIST = True (comme l'assembler ; singletons pris en [0]).
     """
@@ -37,10 +36,6 @@ class RegionPreview:
                 "masks":      ("MASK",),
             },
             "optional": {
-                "x":             ("INT", {"forceInput": True}),
-                "y":             ("INT", {"forceInput": True}),
-                "width":         ("INT", {"forceInput": True}),
-                "height":        ("INT", {"forceInput": True}),
                 "order":         (["list_first_on_top", "area_large_under"],),
                 "mask_adjust":   ("INT",     {"default": 0,   "min": -512, "max": 512}),
                 "feather":       ("INT",     {"default": 8,   "min": 0,    "max": 512}),
@@ -54,7 +49,7 @@ class RegionPreview:
     FUNCTION     = "preview"
     CATEGORY     = "Aioli Nodes"
 
-    def preview(self, base_image, masks, x=None, y=None, width=None, height=None,
+    def preview(self, base_image, masks,
                 order=None, mask_adjust=None, feather=None, opacity=None, debug_outline=None):
 
         base = base_image[0]
@@ -70,10 +65,6 @@ class RegionPreview:
         debug_outline = bool((debug_outline or [True])[0])
 
         n = len(masks)
-        has_coords = bool(x and y and width and height
-                          and len(x) >= n and len(y) >= n
-                          and len(width) >= n and len(height) >= n)
-
         combined = torch.zeros((H, W), dtype=torch.float32)
         layers = []
         for i in range(n):
@@ -81,26 +72,10 @@ class RegionPreview:
             if m.dim() == 3:
                 m = m[0]
             m = m.float()
+            if m.shape[0] != H or m.shape[1] != W:
+                m = _resize_mask(m, W, H)
 
-            if has_coords:
-                wi, hi = int(width[i]), int(height[i])
-                xi, yi = int(x[i]),     int(y[i])
-                if m.shape[0] != hi or m.shape[1] != wi:
-                    m = _resize_mask(m, wi, hi)
-                x0, y0 = max(xi, 0), max(yi, 0)
-                x1, y1 = min(xi + wi, W), min(yi + hi, H)
-                if x1 <= x0 or y1 <= y0:
-                    continue
-                cx0, cy0 = x0 - xi, y0 - yi
-                cx1, cy1 = cx0 + (x1 - x0), cy0 + (y1 - y0)
-                full_mask = torch.zeros((H, W), dtype=torch.float32)
-                full_mask[y0:y1, x0:x1] = m[cy0:cy1, cx0:cx1]
-            else:
-                if m.shape[0] != H or m.shape[1] != W:
-                    m = _resize_mask(m, W, H)
-                full_mask = m
-
-            full_mask = _grow_shrink_fast(full_mask, mask_adjust)
+            full_mask = _grow_shrink_fast(m, mask_adjust)
             alpha = (_feather_fast(full_mask, feather) * opacity).clamp(0.0, 1.0)
             combined = torch.maximum(combined, alpha)
             layers.append((alpha, i))
@@ -115,7 +90,7 @@ class RegionPreview:
                 edge = (_grow_shrink_fast(hard, 2) - hard).clamp(0.0, 1.0).unsqueeze(-1)
                 checker = checker * (1.0 - edge) + col * edge
 
-        print(f"[RegionPreview] {n} zones, coords={'oui' if has_coords else 'non'}, "
+        print(f"[RegionPreview] {n} zones, "
               f"mask_adjust={mask_adjust}, feather={feather}, opacity={opacity}")
         return (combined.unsqueeze(0),
                 checker.clamp(0.0, 1.0).unsqueeze(0),
