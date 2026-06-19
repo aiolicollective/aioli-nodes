@@ -5,6 +5,7 @@ from .nodes.bbox_assembler         import BBoxMultipleAssembler
 from .nodes.regional_conditioning  import RegionalMaskConditioning
 from .nodes.region_mask_list       import RegionMaskList
 from .nodes.mask_split_regions     import MaskSplitRegions
+from .nodes.region_preview         import RegionPreview
 
 NODE_CLASS_MAPPINGS = {
     "RatioOutpaintCalc":        RatioOutpaintCalc,
@@ -14,6 +15,7 @@ NODE_CLASS_MAPPINGS = {
     "RegionalMaskConditioning": RegionalMaskConditioning,
     "RegionMaskList":           RegionMaskList,
     "MaskSplitRegions":         MaskSplitRegions,
+    "RegionPreview":            RegionPreview,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
@@ -24,6 +26,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "RegionalMaskConditioning": "🗺️ Regional Mask Conditioning",
     "RegionMaskList":           "🧱 Region Mask List (+background)",
     "MaskSplitRegions":         "✂️ Mask Split Regions (manual multi)",
+    "RegionPreview":            "👁 Region Preview",
 }
 
 __all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS"]
