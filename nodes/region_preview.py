@@ -15,10 +15,13 @@ class RegionPreview:
       - checker       : l'image de base + contour & léger remplissage colorés par
                         zone, pour voir sur quoi on travaille.
 
-    Sert aussi de POINT DE RÉGLAGE UNIQUE : règle order / mask_adjust / feather /
-    opacity ici, visualise l'effet, et rebranche les sorties dans
-    BBoxMultipleAssembler (convertis ses widgets en entrées). La preview = le rendu
-    final car on réutilise la maths de l'assembler (helpers importés).
+    Sert aussi de POINT DE RÉGLAGE : règle mask_adjust / feather / opacity ici,
+    visualise l'effet, et rebranche ces sorties (INT / INT / FLOAT) dans
+    BBoxMultipleAssembler (convertis ses widgets en entrées). 'order' n'est PAS
+    exposé ici : c'est un combo, et ComfyUI ne permet pas de relier une sortie de
+    node vers une entrée combo — règle-le directement sur l'assembler (il ne change
+    pas la preview, c'est juste l'ordre de superposition au compositing final).
+    La preview = le rendu final car on réutilise la maths de l'assembler.
 
     Les masques attendus sont pleine-taille (sortie habituelle de Region Mask List
     / Mask Split Regions), donc aucune coordonnée n'est nécessaire.
@@ -36,7 +39,6 @@ class RegionPreview:
                 "masks":      ("MASK",),
             },
             "optional": {
-                "order":         (["list_first_on_top", "area_large_under"],),
                 "mask_adjust":   ("INT",     {"default": 0,   "min": -512, "max": 512}),
                 "feather":       ("INT",     {"default": 8,   "min": 0,    "max": 512}),
                 "opacity":       ("FLOAT",   {"default": 1.0, "min": 0.0,  "max": 1.0, "step": 0.01}),
@@ -44,13 +46,13 @@ class RegionPreview:
             },
         }
 
-    RETURN_TYPES = ("MASK", "IMAGE", "INT", "INT", "FLOAT", "STRING")
-    RETURN_NAMES = ("combined_mask", "checker", "mask_adjust", "feather", "opacity", "order")
+    RETURN_TYPES = ("MASK", "IMAGE", "INT", "INT", "FLOAT")
+    RETURN_NAMES = ("combined_mask", "checker", "mask_adjust", "feather", "opacity")
     FUNCTION     = "preview"
     CATEGORY     = "Aioli Nodes"
 
     def preview(self, base_image, masks,
-                order=None, mask_adjust=None, feather=None, opacity=None, debug_outline=None):
+                mask_adjust=None, feather=None, opacity=None, debug_outline=None):
 
         base = base_image[0]
         if base.dim() == 4:
@@ -58,7 +60,6 @@ class RegionPreview:
         base = base.clone().float()
         H, W, C = base.shape
 
-        order         = (order or ["list_first_on_top"])[0]
         mask_adjust   = int((mask_adjust or [0])[0])
         feather       = int((feather or [8])[0])
         opacity       = float((opacity or [1.0])[0])
@@ -94,4 +95,4 @@ class RegionPreview:
               f"mask_adjust={mask_adjust}, feather={feather}, opacity={opacity}")
         return (combined.unsqueeze(0),
                 checker.clamp(0.0, 1.0).unsqueeze(0),
-                mask_adjust, feather, opacity, order)
+                mask_adjust, feather, opacity)
