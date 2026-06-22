@@ -60,6 +60,27 @@ class InpaintColorFix:
     CATEGORY      = "Aioli Nodes"
 
     # ------------------------------------------------------------------
+    # Normalisation des canaux
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _to_rgb3(a: np.ndarray) -> np.ndarray:
+        """Ramene un tableau image a 3 canaux RGB.
+
+        Gere le gris ([H,W] ou [H,W,1]) et les images RGBA / multi-canaux
+        (nano-banana / Gemini, PNG transparents...) en jetant l'alpha. Sans ca,
+        le reshape(-1, 3) du passage LAB casse avec
+        'cannot reshape array of size ... into shape (3)'.
+        """
+        if a.ndim == 2:
+            a = a[..., None]
+        if a.shape[-1] == 1:
+            a = np.repeat(a, 3, axis=-1)
+        elif a.shape[-1] >= 4:
+            a = a[..., :3]
+        return a
+
+    # ------------------------------------------------------------------
     # RGB <-> LAB (pure numpy, D65)
     # ------------------------------------------------------------------
 
@@ -157,8 +178,13 @@ class InpaintColorFix:
             delta_e_threshold, blend_strength, feather_radius,
             mask=None):
 
-        orig_np = original_crop[0].cpu().float().numpy()   # [H,W,3] 0-1
-        inp_np  = inpainted_crop[0].cpu().float().numpy()  # [H,W,3] 0-1
+        orig_np = original_crop[0].cpu().float().numpy()   # [H,W,C] 0-1
+        inp_np  = inpainted_crop[0].cpu().float().numpy()  # [H,W,C] 0-1
+
+        # RGBA / gris -> 3 canaux RGB (sinon le passage LAB reshape(-1,3) casse).
+        # Cas typique : la sortie nano-banana / Gemini arrive en RGBA.
+        orig_np = self._to_rgb3(orig_np)
+        inp_np  = self._to_rgb3(inp_np)
 
         # Assure même taille
         if orig_np.shape != inp_np.shape:
