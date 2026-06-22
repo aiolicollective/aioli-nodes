@@ -29,8 +29,11 @@ class InpaintColorFix:
       mask (opt.)       → MASK override : bypass Delta-E, contrôle direct
 
     Sorties :
-      image_corrected  → crop corrigé à brancher sur ImageResize+
-      correction_mask  → masque debug (blanc = corrigé, noir = créatif intact)
+      image_corrected   → crop corrigé à brancher sur ImageResize+
+      correction_mask   → masque debug (blanc = corrigé, noir = créatif intact)
+      delta_e_threshold → passthrough du réglage reçu (à chaîner sur un 2e color fix)
+      blend_strength    → passthrough du réglage reçu
+      feather_radius    → passthrough du réglage reçu
     """
 
     @classmethod
@@ -54,8 +57,9 @@ class InpaintColorFix:
             },
         }
 
-    RETURN_TYPES  = ("IMAGE", "MASK")
-    RETURN_NAMES  = ("image_corrected", "correction_mask")
+    RETURN_TYPES  = ("IMAGE", "MASK", "FLOAT", "FLOAT", "INT")
+    RETURN_NAMES  = ("image_corrected", "correction_mask",
+                     "delta_e_threshold", "blend_strength", "feather_radius")
     FUNCTION      = "fix"
     CATEGORY      = "Aioli Nodes"
 
@@ -255,4 +259,7 @@ class InpaintColorFix:
         return (
             torch.from_numpy(result).unsqueeze(0),
             corr_mask_out,
+            float(delta_e_threshold),
+            float(blend_strength),
+            int(feather_radius),
         )
