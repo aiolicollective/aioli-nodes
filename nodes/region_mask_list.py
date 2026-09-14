@@ -14,7 +14,7 @@ class RegionMaskList:
     'list_first_on_top' et RegionalMaskConditioning, "dernier = dessous" -> le
     fond reste sous les objets. C'est pour ca que add_background ajoute en queue.
 
-    Cette meme liste alimente : MaskBoundingBox+ (coords + crop par region),
+    Cette meme liste alimente : AioliMaskBBox (bbox + crop + coords par region),
     Gemma (caption par region), le KSampler (N passes) ET le conditionnement
     regional mode B. Le fond y est donc lui aussi captionne et enhance.
 

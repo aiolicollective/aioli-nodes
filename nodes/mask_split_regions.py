@@ -29,7 +29,7 @@ class MaskSplitRegions:
 
     Sortie = LISTE de N masques pleine-taille (la tache en place, noir ailleurs),
     dans l'ordre choisi. Branche-la la ou tu branchais le masque manuel unique :
-    MaskBoundingBox+ / BBoxMultipleFix se mappent dessus automatiquement.
+    AioliMaskBBox se mappe dessus automatiquement.
 
     Pour une seule tache -> 1 masque (comportement identique a avant).
 
