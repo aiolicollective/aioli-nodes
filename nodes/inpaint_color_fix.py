@@ -21,7 +21,7 @@ class InpaintColorFix:
                      transition douce entre zones corrigées/intactes.
 
     Entrées :
-      original_crop     → image_cropped depuis BBoxMultipleFix
+      original_crop     → image_cropped depuis AioliMaskBBox
       inpainted_crop    → IMAGE depuis VAE Decode
       delta_e_threshold → seuil créatif/similaire (-1 = auto) — ignoré si mask branché
       blend_strength    → force du color match (0=aucun, 1=total)
