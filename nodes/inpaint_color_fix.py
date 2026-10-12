@@ -27,6 +27,11 @@ class InpaintColorFix:
       blend_strength    → force du color match (0=aucun, 1=total)
       feather_radius    → rayon du blur du masque actif (0=désactivé)
       mask (opt.)       → MASK override : bypass Delta-E, contrôle direct
+      measure_area (opt.) → MASK zone de mesure (v1.7.0) : seuls ces pixels
+                          entrent dans les statistiques (seuil auto, mean/std).
+                          À brancher sur image_area d'Aioli Mask BBox V2 : le
+                          gris des bandes n'est plus mesuré (il faussait la
+                          correction). Sans lui : tout le crop, comme avant.
 
     Sorties :
       image_corrected  → crop corrigé à brancher sur ImageResize+
@@ -50,7 +55,8 @@ class InpaintColorFix:
                 }),
             },
             "optional": {
-                "mask": ("MASK",),
+                "mask":         ("MASK",),
+                "measure_area": ("MASK",),
             },
         }
 
@@ -174,9 +180,20 @@ class InpaintColorFix:
     # Main
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _mask_to_hw(m, H, W):
+        """MASK comfy -> numpy [H,W] float32, redimensionné si besoin."""
+        a = m[0].cpu().float().numpy() if m.dim() == 3 else m.cpu().float().numpy()
+        if a.shape != (H, W):
+            from PIL import Image
+            a = np.array(
+                Image.fromarray((np.clip(a, 0, 1) * 255).astype(np.uint8)).resize((W, H), Image.LANCZOS)
+            ).astype(np.float32) / 255.0
+        return a
+
     def fix(self, original_crop, inpainted_crop,
             delta_e_threshold, blend_strength, feather_radius,
-            mask=None):
+            mask=None, measure_area=None):
 
         orig_np = original_crop[0].cpu().float().numpy()   # [H,W,C] 0-1
         inp_np  = inpainted_crop[0].cpu().float().numpy()  # [H,W,C] 0-1
@@ -195,6 +212,18 @@ class InpaintColorFix:
             ).astype(np.float32) / 255.0
 
         H, W = orig_np.shape[:2]
+
+        # ------------------------------------------------------------------
+        # Zone de mesure (optionnelle) : 1 = pixel mesuré, 0 = ignoré (bandes)
+        # ------------------------------------------------------------------
+        area = None
+        if measure_area is not None:
+            area = (self._mask_to_hw(measure_area, H, W) >= 0.5).astype(np.float32)
+            if area.sum() < 1:
+                print("[InpaintColorFix] WARNING : measure_area vide -> ignorée (tout le crop mesuré)")
+                area = None
+            else:
+                print(f"[InpaintColorFix] measure_area : {100.0 * area.mean():.1f}% du crop mesuré")
 
         # ------------------------------------------------------------------
         # Masque actif : override (mask branché) ou Delta-E
@@ -218,8 +247,9 @@ class InpaintColorFix:
             delta_e  = np.sqrt((diff ** 2).sum(axis=-1))
 
             if delta_e_threshold < 0:
-                p50       = float(np.percentile(delta_e, 50))
-                p75       = float(np.percentile(delta_e, 75))
+                de_meas   = delta_e[area > 0] if area is not None else delta_e
+                p50       = float(np.percentile(de_meas, 50))
+                p75       = float(np.percentile(de_meas, 75))
                 threshold = float(np.clip(p75 + (p75 - p50) * 0.5, 4.0, 60.0))
                 print(f"[InpaintColorFix] mode=delta_e  auto threshold={threshold:.1f}  "
                       f"(p50={p50:.1f}  p75={p75:.1f})  feather={feather_radius}px")
@@ -233,14 +263,16 @@ class InpaintColorFix:
         # Feathering du masque actif (gaussian blur pure torch)
         active_mask = np.clip(self._feather_mask(active_mask, feather_radius), 0.0, 1.0)
 
-        corrected_pct = 100.0 * (active_mask >= 0.5).sum() / (H * W)
+        meas = area if area is not None else np.ones((H, W), dtype=np.float32)
+        corrected_pct = 100.0 * ((active_mask >= 0.5) * meas).sum() / meas.sum()
         print(f"[InpaintColorFix] corrected={corrected_pct:.1f}%  "
               f"untouched={100-corrected_pct:.1f}%")
 
         # Color match mean_std en LAB
         orig_lab = self._rgb_to_lab(orig_np)
         inp_lab  = self._rgb_to_lab(inp_np)
-        corrected_lab = self._match_mean_std(inp_lab, orig_lab, active_mask)
+        stats_weight  = active_mask * area if area is not None else active_mask
+        corrected_lab = self._match_mean_std(inp_lab, orig_lab, stats_weight)
 
         # Blend final pondéré par masque × blend_strength
         weight3   = (active_mask * blend_strength)[..., np.newaxis]

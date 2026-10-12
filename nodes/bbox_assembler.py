@@ -60,6 +60,15 @@ def _grow_shrink_fast(mask_hw, px):
 
 
 def _feather_fast(mask_hw, px):
+    """
+    Flou box separable (feather) sur la pleine toile.
+
+    v1.7.0 : bord de l'image en padding 'replicate'. Avant, avg_pool2d comptait
+    le bord comme du noir : un masque qui touchait le bord de l'image y tombait
+    a ~0,53 (~0,28 en coin, feather 8) et l'original revenait. Avec 'replicate',
+    le bord prolonge le masque tel qu'il est : un masque qui touche le bord
+    reste a 1, un masque qui s'arrete avant le bord n'est pas sur-corrige.
+    """
     if px <= 0:
         return mask_hw
     px = int(px)
@@ -70,8 +79,8 @@ def _feather_fast(mask_hw, px):
         m = F.avg_pool2d(m, scale, stride=scale, ceil_mode=True)
     r = max(1, round(px / scale))
     k = r * 2 + 1
-    m = F.avg_pool2d(m, (1, k), stride=1, padding=(0, r))
-    m = F.avg_pool2d(m, (k, 1), stride=1, padding=(r, 0))
+    m = F.avg_pool2d(F.pad(m, (r, r, 0, 0), mode="replicate"), (1, k), stride=1)
+    m = F.avg_pool2d(F.pad(m, (0, 0, r, r), mode="replicate"), (k, 1), stride=1)
     if scale > 1:
         m = F.interpolate(m, size=mask_hw.shape, mode="bilinear", align_corners=False)
     return m.squeeze(0).squeeze(0).clamp(0.0, 1.0)
