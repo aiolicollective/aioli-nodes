@@ -1,6 +1,8 @@
 import math
 import torch
 
+from .tensor_utils import resize_lanczos
+
 
 RATIOS = {
     "1:1":  (1, 1),
@@ -37,6 +39,18 @@ class RatioOutpaintCalc:
       8 / 16 / 32 / 64 - arrondi au multiple le plus proche (round)
                          sur les deux dimensions.
                          Recommande : 16 (Flux), 64 (SDXL).
+
+    mask (optionnel, v1.7.1) :
+      Un masque dessine sur l'image source. Il est remis a la taille de
+      l'image si besoin, puis padde EXACTEMENT comme l'image (zeros dans les
+      bandes) -> sortie 'mask_padded', alignee sur image_padded. Sert a garder
+      les masques d'inpaint en place quand on outpainte dans le meme run.
+      Non branche : mask_padded = zeros.
+
+    Pour un workflow ou les multiples sont geres plus loin (Aioli Mask BBox V2),
+    preferer multiple = none : il ne fait qu'agrandir, sans jamais rogner la
+    source. Les multiples 8..64 arrondissent au plus proche et peuvent rogner
+    quelques pixels.
     """
 
     @classmethod
@@ -46,22 +60,40 @@ class RatioOutpaintCalc:
                 "image":    ("IMAGE",),
                 "ratio":    (["none"] + list(RATIOS.keys()),),
                 "multiple": (MULTIPLES, {"default": "16 (Flux)"}),
-            }
+            },
+            "optional": {
+                "mask":     ("MASK",),
+            },
         }
 
-    RETURN_TYPES  = ("IMAGE", "MASK")
-    RETURN_NAMES  = ("image_padded", "mask")
+    RETURN_TYPES  = ("IMAGE", "MASK", "MASK")
+    RETURN_NAMES  = ("image_padded", "mask", "mask_padded")
     FUNCTION      = "calculate"
     CATEGORY      = "Aioli Nodes"
 
-    def calculate(self, image, ratio, multiple="16 (Flux)"):
+    @staticmethod
+    def _input_mask(mask, B, H, W):
+        """Masque d'entree aligne sur l'image (B, H, W) ; zeros si absent."""
+        if mask is None:
+            return torch.zeros((B, H, W), dtype=torch.float32)
+        m = mask.float()
+        if m.dim() == 2:
+            m = m.unsqueeze(0)
+        if m.shape[1] != H or m.shape[2] != W:
+            print(f"[RatioOutpaintCalc] mask {m.shape[2]}x{m.shape[1]} != image {W}x{H} "
+                  f"-> mask redimensionne sur l'image")
+            m = resize_lanczos(m, W, H, "mask")
+        return m
+
+    def calculate(self, image, ratio, multiple="16 (Flux)", mask=None):
         B, H, W, C = image.shape
+        in_mask = self._input_mask(mask, B, H, W)
 
         # Mode ratio=none : pass-through, aucun padding
         if ratio == "none":
             print(f"[RatioOutpaintCalc] {W}x{H} | ratio=none, pass-through")
             mask = torch.zeros((B, H, W), dtype=torch.float32)
-            return (image, mask)
+            return (image, mask, in_mask)
 
         rw, rh = RATIOS[ratio]
 
@@ -77,7 +109,7 @@ class RatioOutpaintCalc:
             else:
                 print(f"[RatioOutpaintCalc] {W}x{H} deja au ratio {ratio}")
                 mask = torch.zeros((B, H, W), dtype=torch.float32)
-                return (image, mask)
+                return (image, mask, in_mask)
             mult_label = "legacy x8-ceil"
 
         else:
@@ -93,7 +125,7 @@ class RatioOutpaintCalc:
             else:
                 print(f"[RatioOutpaintCalc] {W}x{H} deja au ratio {ratio}")
                 mask = torch.zeros((B, H, W), dtype=torch.float32)
-                return (image, mask)
+                return (image, mask, in_mask)
             mult_label = f"x{mult}-round"
 
         pad_left   = (new_W - W) // 2
@@ -112,7 +144,13 @@ class RatioOutpaintCalc:
         )
         img = img.permute(0, 2, 3, 1)
 
-        mask = torch.ones((B, new_H, new_W), dtype=torch.float32)
-        mask[:, pad_top:pad_top + H, pad_left:pad_left + W] = 0.0
+        # Masques construits avec EXACTEMENT le meme pad que l'image. Un pad
+        # negatif (l'arrondi au multiple descend sous la taille source) rogne
+        # l'image : le masque des bandes doit le suivre. Avant 1.7.1, il etait
+        # construit par indexation, qui donnait un masque faux dans ce cas.
+        pads = (pad_left, pad_right, pad_top, pad_bottom)
+        mask = torch.nn.functional.pad(
+            torch.zeros((B, H, W), dtype=torch.float32), pads, mode="constant", value=1.0)
+        mask_padded = torch.nn.functional.pad(in_mask, pads, mode="constant", value=0.0)
 
-        return (img, mask)
+        return (img, mask, mask_padded)
