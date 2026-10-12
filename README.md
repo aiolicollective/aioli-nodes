@@ -2,6 +2,8 @@
 
 Eight nodes for outpainting, inpainting and **multi-region** (SAM3 or hand-drawn) editing in ComfyUI — plus ready-to-run example workflows, including three that work out-of-the-box on **ComfyUI Cloud** (no install required).
 
+> **1.7.1 —** **🖼️ Ratio Outpaint Calc** can pad a drawn mask exactly like the image (`mask` → `mask_padded`), and **🧱 Region Mask List** can add the outpaint bands as one more region (`extra_mask`) and turn "no region" into the whole image (`empty = full_image`). Outpaint and inpaint now run in the same pass. Fix: when rounding to `multiple` made the padded image *smaller* than the source on one side (a crop of a few pixels), the band `mask` was wrong — it now follows the image exactly. Prefer `multiple = none` when Aioli Mask BBox V2 handles the multiples downstream: it only ever enlarges.
+>
 > **1.7.0 —** New **📐 Aioli Mask BBox V2**: one geometry rule for regions, borders and whole images — the crop never cuts the bbox and is never stretched, grey bands fill in when the image is too small, and `resolution` is a pixel budget (square equivalent). **🧩 BBox Multiple Assembler** feather no longer lets the original back in at the image border. **✂️ Mask Split Regions** can turn an empty mask into the whole image, **🎨 Inpaint Color Fix** can ignore the bands. Existing workflows keep loading: the 1.6 node stays registered as *Aioli Mask BBox (legacy)*. The only visible change on old workflows is the feather at the image border (see [BBox Multiple Assembler](#-bbox-multiple-assembler)). See [Migrating from Aioli Mask BBox (legacy)](#migrating-from--aioli-mask-bbox-legacy).
 >
 > **1.6.0 —** `MaskBoundingBox+` (ComfyUI Essentials) and `BBox Multiple Fix` merged into a single node, now itself legacy.
@@ -52,16 +54,27 @@ Automatically computes padding and generates the mask.
 |-----------|------|-------------|
 | image | IMAGE | Source image |
 | ratio | dropdown | `none` · `1:1` · `4:5` · `5:4` · `3:4` · `4:3` · `16:9` · `9:16` |
+| multiple | dropdown | `none` (legacy: ceil to 8 on the computed side) · `8` · `16` · `32` · `64` — both sides rounded to the nearest multiple |
+| mask *(optional)* | MASK | A mask drawn on the source image — resized onto the image if needed, then padded **exactly** like it |
 
 **Outputs**
 | Output | Type | Description |
 |--------|------|-------------|
 | image_padded | IMAGE | Image padded with neutral grey (0.5) |
-| mask | MASK | Binary mask (0 = keep, 1 = generate) |
+| mask | MASK | Binary mask (0 = keep, 1 = generate) — the outpaint bands |
+| mask_padded | MASK | The input `mask`, aligned on `image_padded` (0 in the bands). All zeros when no mask is connected |
 
 **Workflow**
 ```
 Load Image → 🖼️ Ratio Outpaint Calc → VAE Encode (Inpaint) → KSampler
+```
+
+**Outpaint + inpaint in the same run** (1.7.1)
+```
+Load Image (image + mask) → 🖼️ Ratio Outpaint Calc
+  ├── image_padded  → base image for 📐 Aioli Mask BBox V2 and 🧩 BBox Multiple Assembler
+  ├── mask_padded   → ✂️ Mask Split Regions → 🧱 Region Mask List (masks)
+  └── mask (bands)  ─────────────────────────→ 🧱 Region Mask List (extra_mask)
 ```
 
 ---
@@ -133,7 +146,8 @@ N² is reached by the pair of multiples closest to the crop's ratio, within ±5 
 | Drawn or SAM3 mask | `context = region` | Inpaint per region, crop + `padding` |
 | Mask | `context = full_image` | The model sees the whole image, only the masked zones are pasted back |
 | No mask | Mask Split Regions `empty_mask = full_image` | The whole image is edited |
-| 🖼️ Ratio Outpaint Calc | base = `image_padded`, its `mask` added to the region list | Only the padded bands are generated, the whole image as context |
+| 🖼️ Ratio Outpaint Calc | base = `image_padded`, its `mask` → Region Mask List `extra_mask` | Only the padded bands are generated, the whole image as context |
+| Outpaint + drawn mask | the drawn mask through `mask_padded` → Mask Split Regions | Outpaint and inpaint in the same run |
 
 **Workflow**
 ```
@@ -310,6 +324,8 @@ The last element being the background pairs with **BBox Multiple Assembler**'s `
 | add_background | BOOLEAN | Append the inverse-union background mask last. Default `True` |
 | threshold | FLOAT | Binarisation cutoff used **only** to compute the background (inverse union). No effect on the object masks, and none at all when `add_background = False`. Default `0.5` |
 | min_bg_area | FLOAT | Skip the background if it covers less than this fraction of the image. Default `0.0` |
+| extra_mask *(optional)* | MASK | Added **as is** as one more region, after the others (before the background). Typically the bands from 🖼️ Ratio Outpaint Calc: one region, the whole image as context, next to drawn or SAM3 masks |
+| empty | dropdown | `keep` (default, as before): empty masks pass through · `full_image`: empty masks (nothing ≥ `threshold`) are dropped, and if no region is left the list becomes **one full mask** — no mask = the whole image is edited |
 
 **Outputs**
 | Output | Type | Description |
