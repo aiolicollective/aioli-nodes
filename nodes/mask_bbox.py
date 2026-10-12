@@ -9,6 +9,11 @@ LOG = "AioliMaskBBox"
 
 class AioliMaskBBox:
     """
+    LEGACY depuis v1.7.0 — remplace par 📐 Aioli Mask BBox V2 (cle
+    "AioliMaskBBoxV2", nodes/mask_bbox_v2.py). Garde enregistre a l'identique
+    (cle, entrees, sorties, calcul via bbox_core) pour que les workflows
+    existants se chargent et tournent comme avant. Ne plus le faire evoluer.
+
     Un seul node la ou il en fallait deux : 'Mask Bounding Box' (ComfyUI
     Essentials, en maintenance seule depuis avril 2025) suivi de
     'BBox Multiple Fix'.
@@ -49,6 +54,8 @@ class AioliMaskBBox:
       width / height                -> dimensions finales (apres resize)
       target_size                   -> valeur INT du target (0 si "none")
     """
+
+    DEPRECATED = True
 
     @classmethod
     def INPUT_TYPES(cls):

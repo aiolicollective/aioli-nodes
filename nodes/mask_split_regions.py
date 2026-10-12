@@ -37,6 +37,12 @@ class MaskSplitRegions:
       threshold : binarisation du masque dessine (0..1)
       min_area  : taches plus petites (en pixels) ignorees (anti-points perdus)
       sort_by   : ordre des regions en sortie (= hierarchie de l'assembler)
+      empty_mask: que faire d'un masque vide (v1.7.0)
+                  nothing    -> 1 region a zeros, count = 0 (comportement d'avant)
+                  full_image -> 1 region pleine (toute l'image), count = 1 :
+                                pas de masque = toute l'image est editee.
+                  "Vide" est juge APRES threshold : un masque peint a moins de
+                  threshold partout compte comme vide.
 
     Reglages figes dans le code (rarement touches, defauts qui conviennent a la
     quasi-totalite des masques dessines ; modifiables ici au besoin) :
@@ -61,6 +67,7 @@ class MaskSplitRegions:
                 "threshold": ("FLOAT", {"default": 0.5, "min": 0.0, "max": 1.0, "step": 0.01}),
                 "min_area":  ("INT",   {"default": 64, "min": 0, "max": 4096 * 4096}),
                 "sort_by":   (["area_desc", "area_asc", "top_to_bottom", "left_to_right"],),
+                "empty_mask": (["nothing", "full_image"], {"default": "nothing"}),
             },
         }
 
@@ -72,7 +79,7 @@ class MaskSplitRegions:
 
     # connectivity / merge_distance : defauts figes (non exposes en widget)
     def split(self, mask, threshold=0.5, min_area=64, sort_by="area_desc",
-              merge_distance=0, connectivity=8):
+              empty_mask="nothing", merge_distance=0, connectivity=8):
         # MASK comfy : (H,W) ou (B,H,W) -> on prend le 1er
         m = mask
         if m.dim() == 3:
@@ -82,6 +89,9 @@ class MaskSplitRegions:
         binary = (soft.numpy() >= float(threshold))
 
         if not binary.any():
+            if empty_mask == "full_image":
+                print("[MaskSplitRegions] masque vide -> 1 region = image entiere (empty_mask=full_image)")
+                return ([torch.ones((H, W), dtype=torch.float32)], 1)
             print("[MaskSplitRegions] masque vide -> 1 region (zeros)")
             return ([torch.zeros((H, W), dtype=torch.float32)], 0)
 
