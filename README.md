@@ -2,7 +2,9 @@
 
 Eight nodes for outpainting, inpainting and **multi-region** (SAM3 or hand-drawn) editing in ComfyUI — plus ready-to-run example workflows, including three that work out-of-the-box on **ComfyUI Cloud** (no install required).
 
-> **1.6.0 —** `MaskBoundingBox+` (ComfyUI Essentials) and `BBox Multiple Fix` are merged into a single node, **📐 Aioli Mask BBox**. Existing workflows are untouched: `BBoxMultipleFix` stays registered and behaves exactly as before, it is only deprecated. See [Migrating from BBox Multiple Fix](#migrating-from--bbox-multiple-fix).
+> **1.7.0 —** New **📐 Aioli Mask BBox V2**: one geometry rule for regions, borders and whole images — the crop never cuts the bbox and is never stretched, grey bands fill in when the image is too small, and `resolution` is a pixel budget (square equivalent). **🧩 BBox Multiple Assembler** feather no longer lets the original back in at the image border. **✂️ Mask Split Regions** can turn an empty mask into the whole image, **🎨 Inpaint Color Fix** can ignore the bands. Existing workflows keep loading: the 1.6 node stays registered as *Aioli Mask BBox (legacy)*. The only visible change on old workflows is the feather at the image border (see [BBox Multiple Assembler](#-bbox-multiple-assembler)). See [Migrating from Aioli Mask BBox (legacy)](#migrating-from--aioli-mask-bbox-legacy).
+>
+> **1.6.0 —** `MaskBoundingBox+` (ComfyUI Essentials) and `BBox Multiple Fix` merged into a single node, now itself legacy.
 
 ---
 
@@ -12,7 +14,8 @@ All workflows in this repo use the same core idea: **inpaint only the masked reg
 
 - **The source image's dimensions are preserved end-to-end.** Only the crop around the mask goes through the model / KSampler — so the full-resolution original never gets downscaled, stretched, or otherwise degraded to fit a generation budget.
 - **More detail inside the masked region.** Since only the crop is generated, the model's entire budget (attention, denoising steps, resolution) is spent on that zone — not diluted across background pixels that aren't changing.
-- **`force_square` avoids internal recrops.** Most image-edit models (nano-banana, Flux, Qwen-Edit, SDXL inpaint) quietly recrop or letterbox any non-1:1 input. Forcing the crop to be square before sending prevents this "pixel shift", keeping the output pixel-aligned with the source.
+- **`force_square` avoids internal recrops.** Most image-edit models (nano-banana, Flux, Qwen-Edit, SDXL inpaint) quietly recrop or letterbox any non-1:1 input. Forcing the crop to be square before sending prevents this "pixel shift", keeping the output pixel-aligned with the source. When the square doesn't fit in the image, grey bands fill in — the crop is never stretched.
+- **One path for everything.** Region, region with the whole image as context, whole image, outpaint: the same chain (Aioli Mask BBox V2 → model → BBox Multiple Assembler) — what it does follows from what you give it.
 - **Pixel-perfect recompose.** After generation, the result is stitched back onto the untouched source at the exact original coordinates — no drift, no seams, no colour shift at the mask edges.
 
 ---
@@ -63,112 +66,139 @@ Load Image → 🖼️ Ratio Outpaint Calc → VAE Encode (Inpaint) → KSampler
 
 ---
 
-## 📐 Aioli Mask BBox
+## 📐 Aioli Mask BBox V2
 
-Takes the source image + mask, **finds the bbox itself**, rounds the crop to the chosen multiple and handles scaling (up or down) to a Flux-friendly resolution — one node where the chain used to need two.
+Takes the source image + mask, **finds the bbox itself** and returns the crop to send to the model — at a size the model likes, with **one geometry rule** for every case: a small masked region, a large one, a region touching the border, or the whole image.
 
-It replaces the pair **Mask Bounding Box** (ComfyUI Essentials) → **BBox Multiple Fix**. Essentials went [maintenance-only in April 2025](https://github.com/cubiq/ComfyUI_essentials#readme), and the first step of every inpaint workflow here shouldn't depend on a node nobody maintains. The bbox logic it provided is four lines of `torch.where` — now built in.
+- **The crop always contains the whole bbox.** It is the bbox grown to the model's aspect ratio, centred, pushed back inside the image.
+- **Never stretched.** When the crop needs more room than the image has (a square crop on a 16:9 image, a region at the edge), **grey bands** fill the missing part instead. `x` / `y` can then be negative and `orig_width` / `orig_height` include the bands. **🧩 BBox Multiple Assembler** pastes back only the part that lies inside the image.
+- **`resolution` is a pixel budget, not a side length.** `1024` means "as many pixels as 1024 × 1024", at the crop's ratio, sides rounded to `multiple`.
+- **`context = full_image`** sends the whole image to the model but pastes back only the masked zone.
 
-The node ensures the inpainted region stitches back **pixel-perfectly** onto the base image — no border artefacts, no alignment drift, even when the mask zone is at the very edge of the image.
-
-**Example**
-
-![Aioli Mask BBox — Flux2Klein inpaint example](examples/IMG_Inpaint_aioli-nodes_Flux2Klein.jpg)
-
-*The inpaint applied back onto the base image fits the original contours exactly — pixel-perfect edges, no alignment drift.*
+> Recompose with **🧩 BBox Multiple Assembler** (connect `x`, `y`, `orig_width` → `width`, `orig_height` → `height`). `ImageCompositeMasked` does not handle negative coordinates and no longer fits.
 
 **Inputs**
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| image | IMAGE | Full source image (before crop) |
-| mask | MASK | Full source mask (before crop) — resized onto the image if their definitions differ |
-| padding | INT | Margin in pixels around the detected bbox, before any rounding. Replaces both `padding` and `blur` from Mask Bounding Box — both only widened the bbox, one knob is enough. Default: `0` |
-| multiple | dropdown | `8 (VAE minimum)` · `16 (Flux)` · `32 (SD1.5)` · `64 (SDXL)` |
-| target | dropdown | `none` · `512` · `768` · `1024` · `1536` · `2048` |
-| force_square | BOOLEAN | Force crop to 1:1 ratio — side = max(width, height). Default: `False` |
-| force_target_downscale | BOOLEAN | If bbox > target, downscale toward target (GCD). Default: `False` — fallback to 2048 cap |
+| image | IMAGE | Full source image |
+| mask | MASK | Full source mask — resized onto the image if their definitions differ |
+| padding | INT | Margin in pixels around the detected bbox. Ignored with `context = full_image`. Default: `48` |
+| multiple | dropdown | `8 (VAE minimum)` · `16 (Flux)` · `32 (SD1.5)` · `64 (SDXL)` — the model-side dimensions are multiples of it. Default: `16` |
+| resolution | INT (slider) | Model size as a **square equivalent**: as many pixels as N × N. Step 64, up to 4096 (warning above 2048). `0` = native size. Default: `1024` |
+| force_square | BOOLEAN | Square model size. Bands fill in when the square doesn't fit in the image. Default: `False` |
+| force_target_downscale | BOOLEAN | When the crop is larger than N², reduce it to N². Off: keep its native size, capped. Default: `False` |
+| context | dropdown | `region` (crop around the mask) · `full_image` (crop = whole image, mask unchanged). Default: `region` |
+| band_color *(optional)* | FLOAT | Grey level of the bands. Default: `0.5` |
 
-**Outputs**
+**Outputs** — the nine outputs of the 1.6 node, same names, same order, plus `image_area`.
 | Output | Type | Description |
 |--------|------|-------------|
-| image_cropped | IMAGE | Cropped image (scaled if needed) |
-| mask_cropped | MASK | Cropped mask (scaled if needed) |
-| x | INT | x position for ImageCompositeMasked |
-| y | INT | y position for ImageCompositeMasked |
-| orig_width | INT | Crop width in source BEFORE scale — use for resize-back after VAE Decode |
-| orig_height | INT | Crop height in source BEFORE scale |
-| width | INT | Final width after scale |
-| height | INT | Final height after scale |
-| target_size | INT | Numeric value of target (0 if `none`) — connect directly to ImageResize+ |
+| image_cropped | IMAGE | Crop at model size (bands included) |
+| mask_cropped | MASK | Mask crop at model size (0 in the bands) |
+| x / y | INT | Top-left of the crop in the source — **can be negative** (bands) |
+| orig_width / orig_height | INT | Crop size in the source, bands included → assembler `width` / `height` |
+| width / height | INT | Size sent to the model |
+| target_size | INT | `resolution` (0 = none) |
+| image_area | MASK | At model size: 1 on image pixels, 0 on the bands and the thin resize fringe next to them → **🎨 Inpaint Color Fix** `measure_area` |
 
-**Scaling behaviour**
+**Model size**
 
-| Situation | Behaviour |
-|-----------|-----------|
-| bbox ≤ target | Upscale crop toward target — exact ratio via GCD |
-| bbox > target + `force_target_downscale = True` | Downscale crop toward target — exact ratio via GCD |
-| bbox > target + `force_target_downscale = False` | Fallback: round to multiple + cap at 2048px |
-| target = `none` + bbox > 2048px | Downscale crop to fit 2048px — ratio preserved via GCD |
-| `force_square = True` | Crop is squared first (max side), then scaled |
+| Situation | Model size |
+|-----------|------------|
+| crop smaller than N² | upscaled to N² |
+| crop larger than N², `force_target_downscale = True` | downscaled to N² |
+| crop larger than N², `force_target_downscale = False` | native size (rounded up to `multiple`), capped |
+| `resolution = 0` | native size, capped |
+| cap | 2048² pixels (4.2 MP), or N² when N > 2048 |
 
-> **Anti-clamp guarantee:** the crop is always constrained to the available space around the bbox center — even when the mask zone is at the image border, the ratio is preserved pixel-perfectly (0% drift).
+N² is reached by the pair of multiples closest to the crop's ratio, within ±5 % of N² pixels. A square is always exactly N × N. The model size is never more elongated than 4:1 — a thinner region gets extra context on its short side.
 
-> **Note on `force_square` with very large bboxes:** if `max(bbox_w, bbox_h)` exceeds the smallest source dimension (i.e. the theoretical square doesn't fit in the image), the crop is reduced to a non-square rectangle by the final clamp, then **stretched** to fit the square target. The node still returns the original (pre-stretch) dimensions via `orig_width` / `orig_height`, so for pixel-perfect recompose in this case, set the downstream `ImageResize+` to **stretch mode (`keep_proportion = False`)** — the inverse stretch will then restore the correct shape before `ImageCompositeMasked`. A warning is logged when this case is triggered.
+| `resolution` | `multiple` | 1:1 | 3:2 | 4:3 | 16:9 |
+|---|---|---|---|---|---|
+| 1024 | 16 | 1024×1024 | 1248×832 | 1200×896 | 1392×784 |
+| 1536 | 32 | 1536×1536 | 1920×1280 | 1792×1344 | 2048×1152 |
+| 2048 | 16 | 2048×2048 | 2496×1664 | 2368×1776 | 2704×1520 |
+| 2048 | 64 | 2048×2048 | 2496×1664 | 2368×1792 | 2752×1536 |
 
-> **Empty mask:** an all-black mask no longer breaks the run — the bbox falls back to the whole image and a warning is logged. `MaskBoundingBox+` raised an exception here.
+> **Whole image and `force_target_downscale = False`:** a whole image is usually larger than N², so it goes to the model at its native size capped at 4.2 MP — `resolution` then has no visible effect. Turn `force_target_downscale` on to send it at N².
 
-**Workflow without scale**
+> **Thin bands on whole images.** Rounding to `multiple` rarely matches the image ratio exactly, so a whole image usually gets a few pixels of band (1–2 px at ×16, up to ~15 px at ×64). They are dropped at recompose.
+
+> **Empty mask:** the bbox falls back to the whole image and the mask stays black (warning in the log). To edit the whole image when nothing is painted, use **✂️ Mask Split Regions** with `empty_mask = full_image`.
+
+**What you give → what it does**
+
+| Input | Settings | Result |
+|-------|----------|--------|
+| Drawn or SAM3 mask | `context = region` | Inpaint per region, crop + `padding` |
+| Mask | `context = full_image` | The model sees the whole image, only the masked zones are pasted back |
+| No mask | Mask Split Regions `empty_mask = full_image` | The whole image is edited |
+| 🖼️ Ratio Outpaint Calc | base = `image_padded`, its `mask` added to the region list | Only the padded bands are generated, the whole image as context |
+
+**Workflow**
 ```
-Aioli Mask BBox → VAE Encode → KSampler → VAE Decode → ImageCompositeMasked ← x, y
+✂️ Mask Split Regions / 🧱 Region Mask List
+  └→ 📐 Aioli Mask BBox V2 ── image_cropped → model → 🎨 Inpaint Color Fix ← image_area
+        │                                                   │
+        └── x, y, orig_width, orig_height ──→ 🧩 BBox Multiple Assembler
 ```
 
-**Workflow with upscale / downscale**
-```
-Aioli Mask BBox → VAE Encode → KSampler → VAE Decode
-  │                                            │
-  ├── orig_width, orig_height                  │
-  ├── x, y                     ImageResize+ ←─┘
-  │                             ↑
-  └── target_size ──────────────┘
-                                │
-                     ImageCompositeMasked ← x, y
-```
+### Migrating from 📐 Aioli Mask BBox (legacy)
 
-### Migrating from 📐 BBox Multiple Fix
-
-`BBoxMultipleFix` is **still registered, under the same key, with the same inputs and outputs in the same order**. Existing workflows load and run exactly as before — nothing to do. It is only marked deprecated (recent ComfyUI frontends hide it from the node search) and it now shares its algorithm with Aioli Mask BBox, so both produce bit-identical crops.
+`AioliMaskBBox` (1.6) is **still registered under the same key, with the same inputs and outputs**: existing workflows load and run exactly as before. It is only marked deprecated — recent ComfyUI frontends hide it from the node search — and shown as *Aioli Mask BBox (legacy)*.
 
 To migrate a workflow:
 
-1. Drop a **📐 Aioli Mask BBox**, connect the source `image` and `mask` to it.
-2. Reconnect the nine outputs — same names, same order as `BBox Multiple Fix`.
-3. Delete the `MaskBoundingBox+` and the old `BBox Multiple Fix`.
-4. If `MaskBoundingBox+` had `blur > 0`, carry that value over to `padding`. Blur only widened the bbox: the blurred mask was thrown away, since `BBox Multiple Fix` re-cropped the full-resolution mask.
+1. Replace it with **📐 Aioli Mask BBox V2**, connect `image` and `mask`.
+2. Reconnect the nine outputs — same names, same order.
+3. Set `resolution` to the old `target` value (`none` → `0`). It now counts pixels, not the long side: a 3:2 crop at `1024` becomes 1248×832 instead of 1024×688.
+4. Recompose with **🧩 BBox Multiple Assembler** (`orig_width` / `orig_height` → `width` / `height`). Drop any `ImageResize+` in stretch mode and `ImageCompositeMasked` — the assembler resizes the crop back itself.
+5. Optional: wire `image_area` into **🎨 Inpaint Color Fix** `measure_area`.
 
-The example workflows in `examples/` still ship the two-node chain — they keep working as-is.
+Why a new node rather than an update: changing `target` from a dropdown to an INT would break every saved workflow (`"none"` can't be read as a number), and the old node could, without `force_square`, **cut the bbox** (crop smaller than the bbox when a target was set) or **leave strips of the original** on whole-image crops. V2 fixes both by construction.
+
+<details>
+<summary>Legacy 📐 Aioli Mask BBox (1.6) — reference</summary>
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| padding | INT | Margin in pixels around the detected bbox. Default: `0` |
+| multiple | dropdown | `8 (VAE minimum)` · `16 (Flux)` · `32 (SD1.5)` · `64 (SDXL)` |
+| target | dropdown | `none` · `512` · `768` · `1024` · `1536` · `2048` — long side |
+| force_square | BOOLEAN | Crop squared to max(width, height). If the square doesn't fit in the image, the crop becomes a rectangle stretched to the square target |
+| force_target_downscale | BOOLEAN | If bbox > target, downscale toward target. Default: `False` — fallback to a 2048 px cap |
+
+Outputs: `image_cropped`, `mask_cropped`, `x`, `y`, `orig_width`, `orig_height`, `width`, `height`, `target_size` — designed for `ImageResize+` → `ImageCompositeMasked`.
+
+</details>
+
+### Migrating from 📐 BBox Multiple Fix
+
+`BBoxMultipleFix` (1.5) is also still registered, same key, same inputs and outputs: old workflows keep running unchanged. To migrate, replace the pair `MaskBoundingBox+` (ComfyUI Essentials, [maintenance-only since April 2025](https://github.com/cubiq/ComfyUI_essentials#readme)) → `BBox Multiple Fix` by one **📐 Aioli Mask BBox V2** and follow the steps above. If `MaskBoundingBox+` had `blur > 0`, carry that value over to `padding` — blur only widened the bbox.
 
 ---
 
 ## 🎨 Inpaint Color Fix
 
-Plugs in right after **VAE Decode**, before `ImageResize+` / `ImageCompositeMasked`.
+Plugs in right after **VAE Decode**, before **🧩 BBox Multiple Assembler**.
 
 Corrects colorimetric drift introduced by the generation — selectively applies a LAB color match only on pixels that haven't significantly changed, leaving truly creative pixels untouched. No external dependencies (pure numpy + torch).
 
 **Inputs**
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| original_crop | IMAGE | `image_cropped` from 📐 Aioli Mask BBox (before KSampler) |
+| original_crop | IMAGE | `image_cropped` from 📐 Aioli Mask BBox V2 (before KSampler) |
 | inpainted_crop | IMAGE | IMAGE from VAE Decode |
 | delta_e_threshold | FLOAT | Similarity threshold (-1 = auto). Below = corrected, above = creative/intact |
 | blend_strength | FLOAT | Color match strength on similar zones (0 = none, 1 = full) |
 | feather_radius | INT | Gaussian blur radius on the correction mask (0 = disabled) |
 | mask *(optional)* | MASK | Override mode: bypasses Delta-E entirely, the mask drives correction directly |
+| measure_area *(optional)* | MASK | Pixels used for the statistics (auto threshold, colour match). Connect `image_area` from 📐 Aioli Mask BBox V2 so the grey bands don't skew the correction. Unconnected: the whole crop, as before |
 
 **Outputs**
 | Output | Type | Description |
 |--------|------|-------------|
-| image_corrected | IMAGE | Color-corrected crop — connect to ImageResize+ |
+| image_corrected | IMAGE | Color-corrected crop — connect to the assembler `crops` |
 | correction_mask | MASK | Debug mask (white = corrected, black = creative/intact) |
 
 **Modes**
@@ -190,8 +220,9 @@ Corrects colorimetric drift introduced by the generation — selectively applies
 
 **Position in workflow**
 ```
-Aioli Mask BBox
-  └── image_cropped → KSampler → VAEDecode → 🎨 InpaintColorFix → ImageResize+ → ImageCompositeMasked
+📐 Aioli Mask BBox V2
+  ├── image_cropped → KSampler → VAEDecode → 🎨 InpaintColorFix → 🧩 BBox Multiple Assembler
+  └── image_area ─────────────────────────────────↑ (measure_area)
 ```
 
 ---
@@ -208,8 +239,8 @@ Multi-region recompose — the list-aware successor to `ImageCompositeMasked`. S
 | base_image | IMAGE | Full-resolution untouched source |
 | crops | IMAGE (list) | The N enhanced crops |
 | masks | MASK (list) | The N per-region masks |
-| x / y | INT (list) | Top-left of each crop in the source |
-| width / height | INT (list) | Size of each crop |
+| x / y | INT (list) | Top-left of each crop in the source — negative values are fine (bands) |
+| width / height | INT (list) | Size of each crop in the source → `orig_width` / `orig_height` of 📐 Aioli Mask BBox V2. Crops at another size are resized back (Lanczos) |
 | order | dropdown | `list_first_on_top` (last list item = bottom layer → put the background mask last) · `area_large_under` (large zones under, auto) |
 | mask_adjust | INT | Grow (+) / shrink (−) each mask on the full canvas. Default `0` |
 | feather | INT | Gaussian edge softening. Default `8` |
@@ -225,6 +256,8 @@ Multi-region recompose — the list-aware successor to `ImageCompositeMasked`. S
 > The `checker` outline is always drawn (frozen internally, not exposed as a widget) — turning it off only made `checker` a duplicate of `image`.
 
 > Proven byte-identical to `ImageCompositeMasked` for a single region with `feather = 0, mask_adjust = 0`.
+
+> **1.7.0 — feather at the image border.** The feather used to treat everything outside the image as black: a mask touching the border dropped to ~0.53 there (~0.28 in a corner, feather 8) and the original came back along the edge. The border now extends the mask as it is: a mask touching the border stays at 1, a mask stopping short of it is not pushed up. Old workflows render differently **at the image border only** — an improvement. **👁 Region Preview** follows (same function).
 
 ---
 
@@ -268,7 +301,7 @@ Region Mask List ──┬─→ … per-region crop → KSampler → BBox Multi
 
 Prepares the **list of regional masks** for a SAM3 multi-region pipeline. Takes the N SAM3 masks (batch *or* list), flattens them into a clean full-size list in the received order, and optionally appends a **background mask** (the inverse of the union of all masks) as the **last** element. `INPUT_IS_LIST` · `OUTPUT_IS_LIST = (True, False, False)`.
 
-The last element being the background pairs with **BBox Multiple Assembler**'s `list_first_on_top` ordering (last = bottom layer), so the background stays under the objects. The same list feeds **📐 Aioli Mask BBox** (per-region crop + coords), the per-region Gemma caption, the KSampler (N passes) and **Regional Mask Conditioning**.
+The last element being the background pairs with **BBox Multiple Assembler**'s `list_first_on_top` ordering (last = bottom layer), so the background stays under the objects. The same list feeds **📐 Aioli Mask BBox V2** (per-region crop + coords), the per-region Gemma caption, the KSampler (N passes) and **Regional Mask Conditioning**.
 
 **Inputs**
 | Parameter | Type | Description |
@@ -315,7 +348,7 @@ Folds a **list of (conditioning, mask)** pairs into a **single regional conditio
 
 ## ✂️ Mask Split Regions
 
-Splits **one hand-drawn mask** into **N separate masks**, one per disconnected blob (connected-component labelling). Each painted region then gets its own bbox / crop / prompt — manual multi-region inpaint, exactly like SAM3 but **keyword-free**. A single connected blob → 1 mask (identical to a normal single-region inpaint). Output is a **list**, so it drops straight into **📐 Aioli Mask BBox**, which maps over it. Uses `scipy.ndimage` — already bundled with ComfyUI, no install. `OUTPUT_IS_LIST = (True, False)`.
+Splits **one hand-drawn mask** into **N separate masks**, one per disconnected blob (connected-component labelling). Each painted region then gets its own bbox / crop / prompt — manual multi-region inpaint, exactly like SAM3 but **keyword-free**. A single connected blob → 1 mask (identical to a normal single-region inpaint). Output is a **list**, so it drops straight into **📐 Aioli Mask BBox V2**, which maps over it. Uses `scipy.ndimage` — already bundled with ComfyUI, no install. `OUTPUT_IS_LIST = (True, False)`.
 
 **Inputs**
 | Parameter | Type | Description |
@@ -324,6 +357,7 @@ Splits **one hand-drawn mask** into **N separate masks**, one per disconnected b
 | threshold | FLOAT | Binarisation of the drawn mask. Default `0.5` |
 | min_area | INT | Ignore blobs smaller than this many pixels (anti stray-dots). Default `64` |
 | sort_by | dropdown | `area_desc` (default, largest first) · `area_asc` · `top_to_bottom` · `left_to_right` |
+| empty_mask | dropdown | What an empty mask gives. `nothing` (default, as before): 1 black region, `count = 0` · `full_image`: 1 full region, `count = 1` — nothing painted = the whole image is edited. "Empty" is judged **after** `threshold`: a mask painted below it everywhere counts as empty |
 
 **Outputs**
 | Output | Type | Description |
@@ -333,10 +367,10 @@ Splits **one hand-drawn mask** into **N separate masks**, one per disconnected b
 
 **Position in workflow (manual branch)**
 ```
-ImageToMask → ✂️ Mask Split Regions → (switch) → 📐 Aioli Mask BBox → … per-region inpaint
+ImageToMask → ✂️ Mask Split Regions → 📐 Aioli Mask BBox V2 → … per-region inpaint
 ```
 
-> **Only three widgets are exposed** — `threshold`, `min_area`, `sort_by`. Two parameters are kept as fixed defaults in the node code to keep the canvas clean: `connectivity = 8` (diagonals count — correct for virtually all hand-drawn masks) and `merge_distance = 0` (no stroke merging). Edit `mask_split_regions.py` if you ever need to change them.
+> **Only four widgets are exposed** — `threshold`, `min_area`, `sort_by`, `empty_mask`. Two parameters are kept as fixed defaults in the node code to keep the canvas clean: `connectivity = 8` (diagonals count — correct for virtually all hand-drawn masks) and `merge_distance = 0` (no stroke merging). Edit `mask_split_regions.py` if you ever need to change them.
 
 ---
 
@@ -425,7 +459,7 @@ The assembler's `checker` shows each region outlined in its own colour, `combine
 Load Image (+ SAM3 masks  OR  hand-drawn mask → ✂️ Mask Split Regions)
   └→ 🧱 Region Mask List                (clean list + optional background, last)
         ├─→ 👁 Region Preview            (side branch — combined_mask / checker before generating)
-        └─→ 📐 Aioli Mask BBox                 (per-region bbox + crop + coords, Flux-friendly, anti-clamp)
+        └─→ 📐 Aioli Mask BBox                 (per-region bbox + crop + coords — V2 in new workflows)
               └→ VAE Encode → KSampler   (N passes, one per region, per-region prompt)
                     └→ VAE Decode → 🎨 Inpaint Color Fix       (selective LAB colour match)
                           └→ 🧩 BBox Multiple Assembler         (recompose N crops → image / combined_mask / checker)
@@ -439,7 +473,7 @@ Load Image (+ SAM3 masks  OR  hand-drawn mask → ✂️ Mask Split Regions)
 | Text encoder | `qwen_3_8b_fp8mixed.safetensors` |
 
 **Aioli nodes showcased**
-`MaskSplitRegions` · `RegionMaskList` · `AioliMaskBBox` · `InpaintColorFix` · `BBoxMultipleAssembler` · `RegionPreview` — plus **ComfyUI Essentials** (`ImageResize+`) and **ComfyUI KJNodes** (`GrowMaskWithBlur`). *(The published JSON still wires `MaskBoundingBox+` → `BBoxMultipleFix`; both still work — see [Migrating from BBox Multiple Fix](#migrating-from--bbox-multiple-fix).)*
+`MaskSplitRegions` · `RegionMaskList` · `AioliMaskBBox` · `InpaintColorFix` · `BBoxMultipleAssembler` · `RegionPreview` — plus **ComfyUI Essentials** (`ImageResize+`) and **ComfyUI KJNodes** (`GrowMaskWithBlur`). *(The published JSON still wires `MaskBoundingBox+` → `BBoxMultipleFix`; both still work — see [Migrating from BBox Multiple Fix](#migrating-from--bbox-multiple-fix). New examples built on Aioli Mask BBox V2 are coming.)*
 
 **Usage**
 1. Download the JSON and drag it into ComfyUI
