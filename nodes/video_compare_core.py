@@ -148,12 +148,15 @@ def content_digest(images, workers=4):
 def signature(value):
     """
     Identite d'une entree, pour reutiliser les images deja ecrites quand le
-    node est relance sur le meme contenu. Ne se trompe jamais :
+    node est relance sur le meme contenu :
       - IMAGE, ou video en memoire (VideoFromComponents) : empreinte exacte du
         contenu (une image modifiee sur place par un autre node est vue) ;
       - fichier video sur disque : chemin, taille, dates de modification et de
-        changement (ns, la seconde est mise a jour par toute reecriture, meme
-        `cp -p`), inode, trim, recadrage ;
+        changement (ns), inode, trim, recadrage. Linux / macOS : toute
+        reecriture change la date de changement, meme `cp -p`. Windows : cette
+        date est celle de creation ; un fichier reecrit sur place avec
+        exactement la meme taille et la meme date de modification (ns) serait
+        reutilise (cas d'outil de copie qui restaure les dates) ;
       - autre video en memoire : le MEME objet (reference faible, rien n'est
         retenu en memoire).
     Le fps d'une IMAGE n'en fait pas partie (donnee d'affichage).

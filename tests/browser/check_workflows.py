@@ -7,11 +7,13 @@ KJNodes, Playwright) :
 
 Pour chaque wf : aucune exception JS, aucune erreur console (hors ressources :
 images et modeles absents) ni reponse d'erreur des routes /aioli/, conversion en
-prompt (graphToPrompt) sans erreur, aucune entree requise absente, widgets des
+prompt (graphToPrompt) sans erreur, aucune entree requise absente (nodes de
+sortie et ce dont ils dependent, comme le serveur), widgets des
 nodes aioli identiques apres enregistrement (un wf plus ancien que le node recoit
 en plus, a la fin, les widgets ajoutes depuis).
 Wf actuels (ceux qui ont un 📏 Resolution Panel) : tous leurs nodes existent
-(aioli-nodes + KJNodes + coeur), le panneau lit image / mask du LoadImage et
+(aioli-nodes + KJNodes + coeur), le panneau lit image / mask directement sur
+les sorties 0 / 1 d'un LoadImage (comme dans les exemples livres) et
 envoie chaque sortie sur l'entree du subgraph du meme nom, chaque entree qu'il
 alimente accepte son type (regle de comfy_execution/validation.py), et
 l'interrupteur MASKED LATENT, quand le wf en a un, existe et est off.
@@ -67,9 +69,23 @@ PANEL_TO = [("scale",), ("ratio",), ("regenerate_all",), ("resolution", "crop_re
 
 
 def missing_required(info, prompt):
-    """Entrees requises absentes (comme validate_inputs de ComfyUI) ; types V3 dynamiques ignores."""
+    """
+    Entrees requises absentes, comme le serveur (execution.py) : seulement les
+    nodes de sortie et ceux dont ils dependent. Types V3 dynamiques ignores.
+    """
+    def is_link(v):
+        return isinstance(v, list) and len(v) == 2 and isinstance(v[0], str)
+    stack = [i for i, n in prompt.items() if info.get(n["class_type"], {}).get("output_node")]
+    used = set()
+    while stack:
+        i = stack.pop()
+        if i in used or i not in prompt:
+            continue
+        used.add(i)
+        stack += [v[0] for v in prompt[i]["inputs"].values() if is_link(v)]
     out = []
-    for nid, n in prompt.items():
+    for nid in sorted(used):
+        n = prompt[nid]
         spec = info.get(n["class_type"])
         if not spec:
             continue
@@ -80,6 +96,18 @@ def missing_required(info, prompt):
             if name not in n["inputs"]:
                 out.append(f"{n['class_type']}#{nid}.{name}")
     return out
+
+
+FRONT_ONLY = {"MarkdownNote", "Note", "Reroute", "PrimitiveNode"}
+
+
+def unknown_types(info, saved):
+    """Types de nodes du graphe enregistre absents du serveur (subgraphs compris)."""
+    wf = json.loads(saved)
+    subs = wf.get("definitions", {}).get("subgraphs", [])
+    sub_ids = {s["id"] for s in subs}
+    return sorted({n["type"] for g in [wf] + subs for n in g.get("nodes", [])
+                   if n["type"] not in info and n["type"] not in sub_ids and n["type"] not in FRONT_ONLY})
 
 
 def api(url, path, data=None, method=None, headers=None):
@@ -169,9 +197,7 @@ def main():
                     if diffs:
                         problems.append(f"widgets aioli changes: {diffs[:4]}")
                     prompt = res["prompt"] or {}
-                    # type absent du serveur : le frontend met class_type a null (nom dans _meta.title)
-                    unknown = sorted({f"{n['class_type'] or '?'} ({n.get('_meta', {}).get('title', '')})"
-                                      for n in prompt.values() if n["class_type"] not in info})
+                    unknown = unknown_types(info, res["saved"])
                     p = res["panel"]
                     if unknown and p is not None:
                         problems.append(f"nodes inconnus : {unknown}")
