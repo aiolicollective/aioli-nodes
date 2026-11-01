@@ -1,8 +1,8 @@
 # Aioli Nodes — ComfyUI Custom Node Suite
 
-Nodes for outpainting, inpainting and **multi-region** (SAM3 or hand-drawn) editing in ComfyUI, with one promise: **zero pixel shift and zero colour drift on everything that is not regenerated** — plus a **📏 Resolution Panel** that shows, live, how the image is scaled, padded and cropped, a frame-exact **🎞️ Video Compare**, and ready-to-run example workflows (Flux 3 Klein, Qwen Image 2.1, Nano Banana), plus older ones that work out-of-the-box on **ComfyUI Cloud** (no install required).
+Nodes for outpainting, inpainting and **multi-region** (SAM3 or hand-drawn) editing in ComfyUI, with one promise: **zero pixel shift and zero colour drift on everything that is not regenerated** — plus a **📏 Resolution Panel** that shows, live, how the image is scaled, padded and cropped, a frame-exact **🎞️ Video Compare**, and ready-to-run example workflows (Flux 3 Klein, Qwen Image 2.1, Nano Banana), plus a Nano Banana workflow that runs on **ComfyUI Cloud** with nothing installed.
 
-> **1.8.0 —** New **📏 Resolution Panel**: set the sizing of the chain and see it to scale, live, before running (legacy canvas and Nodes 2.0). New **🎞️ Video Compare**: two clips (VIDEO or IMAGE batch) side by side, wipe, difference, toggle, frame-exact play / step, lossless full-resolution frames on pause. New example workflows (Flux 3 Klein, Qwen Image 2.1, Nano Banana) wired to the panel, with a **MASKED LATENT** test switch. **🧩 BBox Multiple Assembler** / **👁 Region Preview**: `feather` now fades **outward** from the mask — the mask stays at 100 % up to its edge, and `mask_adjust = −feather` touches nothing outside the drawn stroke. **📐 Aioli Mask BBox** (key `AioliMaskBBoxV2` unchanged, no longer displayed "V2"): no more grey fringe at the image border when the crop has bands and is resized, and the mask stays full up to the image border. Batches > 1 are processed image by image (only the first image came out before). Rounding instead of truncation before every Lanczos resize (a −0.5 level bias in pasted zones is gone). Assembler 2–6× faster. Legacy nodes render bit-identically to 1.7.1. **Visible changes on existing workflows:** the feather (now outward), the image border when the crop has bands, ≤ 1 level from rounding. MIT licence file added; tests in `tests/`.
+> **1.8.0 —** New **📏 Resolution Panel**: set the sizing of the chain and see it to scale, live, before running (legacy canvas and Nodes 2.0). New **🎞️ Video Compare**: two clips (VIDEO or IMAGE batch) side by side, wipe, difference, toggle, frame-exact play / step, lossless full-resolution frames on pause. New example workflows (Flux 3 Klein, Qwen Image 2.1, Nano Banana) wired to the panel, with a **MASKED LATENT** test switch; the older examples are removed, except the ComfyCloud Nano Banana workflow. **🧩 BBox Multiple Assembler** / **👁 Region Preview**: `feather` now fades **outward** from the mask — the mask stays at 100 % up to its edge, and `mask_adjust = −feather` touches nothing outside the drawn stroke. **📐 Aioli Mask BBox** (key `AioliMaskBBoxV2` unchanged, no longer displayed "V2"): no more grey fringe at the image border when the crop has bands and is resized, and the mask stays full up to the image border. Batches > 1 are processed image by image (only the first image came out before). Rounding instead of truncation before every Lanczos resize (a −0.5 level bias in pasted zones is gone). Assembler 2–6× faster. Legacy nodes render bit-identically to 1.7.1. **Visible changes on existing workflows:** the feather (now outward), the image border when the crop has bands, ≤ 1 level from rounding. MIT licence file added; tests in `tests/`.
 
 > **1.7.1 —** **🖼️ Ratio Outpaint Calc** can pad a drawn mask exactly like the image (`mask` → `mask_padded`), and **🧱 Region Mask List** can add the outpaint bands as one more region (`extra_mask`) and turn "no region" into the whole image (`empty = full_image`). Outpaint and inpaint now run in the same pass. Fix: when rounding to `multiple` made the padded image *smaller* than the source on one side (a crop of a few pixels), the band `mask` was wrong — it now follows the image exactly. Prefer `multiple = none` when Aioli Mask BBox handles the multiples downstream: it only ever enlarges.
 >
@@ -500,54 +500,34 @@ LoadImage (+ drawn mask) ──→ 📏 Resolution Panel ──settings──┐
 - **MASKED LATENT (test)** — Flux 3 Klein and Qwen only, off by default: the model then gets exactly the same inputs as before, so the same render. On, the sampler starts from the encoded crop with the region mask (`VAE Encode` → `Set Latent Noise Mask`, plus `Differential Diffusion`) instead of an empty latent, and the crop stays the reference. Outside the mask the latent is put back at every step, so the model can no longer slide or zoom the context. Try it on a case where you saw a shift at the seam. No effect without a mask. Qwen: keep `multiple = 32`.
 - The notes in each workflow list the models and the settings.
 
+**Regions → mask → recompose** — the assembler's `checker` outlines each region in its own colour, `combined_mask` is the union of all regions, and `image` is the result, every region pasted back at its exact coordinates.
+
+![checker — each region outlined](examples/IMG_Inpaint_aioli-nodes_Flux2Klein_multi-region-edit_checker.png)
+
+*`checker` — each masked region outlined in its own colour (also before generating, with 👁 Region Preview).*
+
+![combined mask](examples/IMG_Inpaint_aioli-nodes_Flux2Klein_multi-region-edit_combined_mask.png)
+
+*`combined_mask` — the union of all region masks, with `mask_adjust` / `feather` applied.*
+
+![recomposed result](examples/IMG_Inpaint_aioli-nodes_Flux2Klein_multi-region-edit_recomposed.png)
+
+*`image` — each region edited on its own, pasted back onto the untouched source.*
+
 **Needs** aioli-nodes ≥ 1.8.0 and [ComfyUI-KJNodes](https://github.com/kijai/ComfyUI-KJNodes) (`LazySwitchKJ`, `ImageResizeKJv2`); everything else is ComfyUI core (tested on ComfyUI 0.43.2, frontend 1.57.4, legacy canvas and Nodes 2.0).
 
 ---
 
-## ☁️ ComfyCloud-compatible workflows (no install required)
+## ☁️ Nano Banana on ComfyUI Cloud (no install required)
 
-> Older pure-subgraph workflows (no aioli node), kept for setups where custom nodes can't be installed. With aioli-nodes installed, prefer the [example workflows](#-example-workflows--flux-3-klein--qwen-image-21--nano-banana) above.
-
-If you don't want to install the custom node locally — or if you're running **ComfyUI Cloud** where custom nodes aren't available — there are three pure-subgraph workflows that reproduce the `BBoxMultipleFix` behaviour using only pre-installed nodes.
-
-They all package the same reusable subgraph **`Aioli Node Subgraph — BBox Fix`**, which wires together `MaskBoundingBox+`, `ComfyMathExpression`, `ImageCrop+`, `ImageResize+`, `ImagePadForOutpaint`, `MaskComposite`, `GrowMaskWithBlur`, `SolidMask`, `ImpactSwitch`, `BatchImagesNode`, and `CropMask` to deliver the same features:
-
-- **force_square** · **inpaint_mode** (zone / whole image) · **use_mask_blur**
-- **multiple** alignment (with floor-after-clamp, no drift)
-- **target_size** (0 = none with 2048 cap, or 512 / 768 / 1024 / 1536 / 2048)
-- Anti-clamp guarantee
-- Pixel-perfect recompose via `ImageCompositeMasked`
-- **Auto 1:1 padding** in whole-image mode (v2): pads source to a square before sending to the model, then strips the padding off — prevents the model from internally recropping non-square images
-- **Optional second reference image** (v3, nano-banana only): batch a style-reference image alongside the crop for multi-image prompting — with a `use_image2` toggle that safely bypasses the batch when disabled
-
-### Three flavours, one per inpainting model
-
-#### 🍌 nano-banana (Gemini Image) — v3
-
-The lightest variant: just an API call to Gemini Image, no local diffusion weights needed. Includes the v3 `image2` input for multi-image prompting.
+For **ComfyUI Cloud**, where custom nodes can't be installed, a separate Nano Banana workflow reproduces the crop & recompose with pre-installed nodes only. It packages the subgraph **`Aioli Node Subgraph — BBox Fix`** (`MaskBoundingBox+`, `ComfyMathExpression`, `ImageCrop+`, `ImageResize+`, `ImagePadForOutpaint`, `MaskComposite`, `GrowMaskWithBlur`, `SolidMask`, `ImpactSwitch`, `BatchImagesNode`, `CropMask`). It is simpler than the [example workflows](#-example-workflows--flux-3-klein--qwen-image-21--nano-banana) above and needs nothing installed: just an API call to Gemini Image, no local weights.
 
 > **[⬇ Download workflow](examples/WF_Inpaint_aioli-subgraph_ComfyCloud_nano-banana.json)**  
 > **[🚀 Try it live — "NanoInpaint — CropNStitch" on ComfyUI Cloud](https://cloud.comfy.org/?share=2f8ca539ed1a)** *(optimised for the Cloud app runtime — no setup, just paint & run)*
 
 ![nano-banana example](examples/IMG_Inpaint_aioli-subgraph_ComfyCloud_nano-banana.png)
 
-#### 🌀 Flux.2 Klein 9B
-
-Full local diffusion pipeline using the official ComfyUI Flux.2 Klein inpaint template, combined with the BBox Fix subgraph for pixel-perfect crop & recompose.
-
-> **[⬇ Download workflow](examples/WF_Inpaint_aioli-subgraph_ComfyCloud_Flux2Klein.json)**
-
-![Flux2Klein example](examples/IMG_Inpaint_aioli-subgraph_ComfyCloud_Flux2Klein.jpg)
-
-#### 🏮 Qwen Image Edit 2511
-
-Same idea as Flux2Klein but using the Qwen Image Edit 2511 template — a different diffusion model, same BBox Fix subgraph wrapper.
-
-> **[⬇ Download workflow](examples/WF_Inpaint_aioli-subgraph_ComfyCloud_QwenImageEdit_2511.json)**
-
-![Qwen Image Edit example](examples/IMG_Inpaint_aioli-subgraph_ComfyCloud_QwenImageEdit_2511.png)
-
-### Subgraph widgets (all three workflows)
+**Subgraph widgets**
 
 | Widget | Default | Purpose |
 |---|---|---|
@@ -556,62 +536,9 @@ Same idea as Flux2Klein but using the Qwen Image Edit 2511 template — a differ
 | `use_mask_blur` | `False` | Apply `GrowMaskWithBlur` before bbox detection |
 | `multiple` | `16` | Dimension alignment (16/32/64 for VAE; 0/1 disables) |
 | `target_size` | `0` | Long-side target: `0` = none (cap 2048) · `512` · `768` · `1024` · `1536` · `2048` |
-| `use_image2` *(nano-banana v3 only)* | `False` | Batch a second reference image alongside the crop |
+| `use_image2` | `False` | Batch a second reference image alongside the crop |
 
-### Running locally?
-
-The nano-banana example uses `LoadImageOutput`, which works out-of-the-box on ComfyUI Cloud but may not be available in some local setups. If you hit an error on load, just replace that node with a standard `Load Image` node — everything else stays the same.
-
----
-
-## 🔁 Example Workflow — Multi-region edit (Flux.2 Klein)
-
-> **[⬇ Download workflow JSON](examples/aioli_INPAINT_Img_Flux2_Klein_multi-region-edit.json)**
-
-A complete **multi-region** inpaint workflow for **Flux.2 Klein** (9B) that exercises most of this repo's inpaint nodes at once: several masked regions are each cropped, prompted and denoised **independently**, then recomposed pixel-perfectly onto the untouched source. Regions can come from **SAM3** masks or from a single hand-drawn mask split by **✂️ Mask Split Regions** — either way they flow through **🧱 Region Mask List**, get cropped by **📐 Aioli Mask BBox**, enhanced per region in the KSampler, colour-matched by **🎨 Inpaint Color Fix**, and merged by **🧩 BBox Multiple Assembler**. **👁 Region Preview** lets you check the layout *before* generating.
-
-**Regions → mask → recompose**
-
-The assembler's `checker` shows each region outlined in its own colour, `combined_mask` is the union of all regions, and the final `image` is the recomposed result — every region stitched back at its exact coordinates with no seam or colour drift.
-
-![Multi-region checker — each region outlined](examples/IMG_Inpaint_aioli-nodes_Flux2Klein_multi-region-edit_checker.png)
-
-*`checker` — each masked region outlined in its own colour (also previewable up-front with 👁 Region Preview).*
-
-![Multi-region combined mask](examples/IMG_Inpaint_aioli-nodes_Flux2Klein_multi-region-edit_combined_mask.png)
-
-*`combined_mask` — the union of all region masks, with `mask_adjust` / `feather` applied.*
-
-![Multi-region recomposed result](examples/IMG_Inpaint_aioli-nodes_Flux2Klein_multi-region-edit_recomposed.png)
-
-*Final `image` — each region enhanced independently, recomposed pixel-perfectly onto the source.*
-
-**Pipeline**
-```
-Load Image (+ SAM3 masks  OR  hand-drawn mask → ✂️ Mask Split Regions)
-  └→ 🧱 Region Mask List                (clean list + optional background, last)
-        ├─→ 👁 Region Preview            (side branch — combined_mask / checker before generating)
-        └─→ 📐 Aioli Mask BBox                 (per-region bbox + crop + coords — V2 in new workflows)
-              └→ VAE Encode → KSampler   (N passes, one per region, per-region prompt)
-                    └→ VAE Decode → 🎨 Inpaint Color Fix       (selective LAB colour match)
-                          └→ 🧩 BBox Multiple Assembler         (recompose N crops → image / combined_mask / checker)
-```
-
-**Required models**
-| Role | File |
-|------|------|
-| UNet | `flux2/flux-2-klein-9b-fp8.safetensors` |
-| VAE | `flux2/flux2-vae.safetensors` |
-| Text encoder | `qwen_3_8b_fp8mixed.safetensors` |
-
-**Aioli nodes showcased**
-`MaskSplitRegions` · `RegionMaskList` · `AioliMaskBBox` · `InpaintColorFix` · `BBoxMultipleAssembler` · `RegionPreview` — plus **ComfyUI Essentials** (`ImageResize+`) and **ComfyUI KJNodes** (`GrowMaskWithBlur`). *(This older JSON still wires `MaskBoundingBox+` → `BBoxMultipleFix`; both still work — see [Migrating from BBox Multiple Fix](#migrating-from--bbox-multiple-fix). For the current chain on Aioli Mask BBox, see the [example workflows](#-example-workflows--flux-3-klein--qwen-image-21--nano-banana).)*
-
-**Usage**
-1. Download the JSON and drag it into ComfyUI
-2. Provide your image and either SAM3 masks or a hand-drawn mask (split automatically into regions)
-3. Give each region its own prompt
-4. Run — every region is enhanced on its own and recomposed pixel-perfectly onto the source
+**Running locally?** The workflow uses `LoadImageOutput`, which works out-of-the-box on ComfyUI Cloud but may not be available in some local setups. If you hit an error on load, replace that node with a standard `Load Image` node — everything else stays the same.
 
 ---
 
