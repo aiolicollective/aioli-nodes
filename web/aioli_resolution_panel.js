@@ -30,11 +30,12 @@ function inputSlot(node, name) {
 function originNode(node, name) {
   const slot = inputSlot(node, name);
   if (slot < 0 || !node.isInputConnected?.(slot)) return null;
-  let src = node.getInputNode?.(slot) ?? null;
+  // branche mais origine introuvable ici (entree de subgraph, Get/Set...) : undefined
+  let src = node.getInputNode?.(slot) ?? undefined;
   // Reroute legacy : on remonte jusqu'au vrai node (les reroutes natifs sont
   // deja transparents pour getInputNode).
   for (let k = 0; src && src.type === "Reroute" && k < 32; k++) {
-    src = src.isInputConnected?.(0) ? src.getInputNode?.(0) ?? null : null;
+    src = src.isInputConnected?.(0) ? src.getInputNode?.(0) ?? undefined : null;
   }
   return src;
 }
@@ -55,7 +56,8 @@ function esc(t) {
 // Image source : un LoadImage (ou tout node avec un widget "image" = fichier).
 function sourceImage(node) {
   const src = originNode(node, "image");
-  if (!src) return { status: "none" };
+  if (src === null) return { status: "none" };
+  if (src === undefined) return { status: "unknown" };
   const w = src.widgets?.find((w) => w.name === "image");
   if (!w || !w.value) return { status: "unknown" };
   const maskSrc = originNode(node, "mask");
@@ -232,11 +234,14 @@ function setup(node) {
     state.inflight = true;
     state.pending = false;
     const seq = ++state.seq;
+    const ctrl = new AbortController();
+    const timeout = setTimeout(() => ctrl.abort(), 20000);
     try {
       const resp = await api.fetchApi("/aioli/resolution_plan", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ image: src.name, use_mask: src.useMask, settings }),
+        signal: ctrl.signal,
       });
       const data = await resp.json();
       if (seq === state.seq) {                // sinon : un run est passe entre-temps
@@ -247,6 +252,7 @@ function setup(node) {
       if (seq === state.seq) { state.plan = null; state.message = `aperçu indisponible (${e})`; }
     }
     finally {
+      clearTimeout(timeout);
       state.inflight = false;
     }
     redraw();
@@ -259,15 +265,16 @@ function setup(node) {
   function signature() {
     const settings = Object.fromEntries(PARAMS.map((p) => [p, widgetValue(node, p)]));
     const src = sourceImage(node);
-    return { settings, src, sig: JSON.stringify([settings, src]) };
+    const linked = linkedParams(node);
+    return { settings, src, linked, sig: JSON.stringify([settings, src, linked]) };
   }
   state.signature = signature;
 
   function poll() {
-    const { settings, src, sig } = signature();
+    const { settings, src, linked, sig } = signature();
     if (sig === state.sig) return;
     state.sig = sig;
-    state.linked = linkedParams(node);
+    state.linked = linked;
     if (src.status === "none") { state.plan = null; state.message = "branche l'image source (LoadImage)"; redraw(); return; }
     if (src.status === "unknown") { state.plan = null; state.message = "taille connue après run (source sans fichier)"; redraw(); return; }
     clearTimeout(state.timer);
@@ -304,7 +311,10 @@ app.registerExtension({
       if (p && st) {
         st.seq++;                              // un apercu encore en vol n'ecrasera pas le run
         st.plan = p;
-        st.sig = st.signature().sig;           // pas de nouvel apercu tant que rien ne change
+        const cur = st.signature();
+        const same = Object.keys(p.settings || {}).every((k) => p.settings[k] === cur.settings[k]);
+        // reglages changes depuis la mise en file : on montre le run, puis un apercu frais
+        st.sig = same ? cur.sig : null;
         draw(st);
       }
     };

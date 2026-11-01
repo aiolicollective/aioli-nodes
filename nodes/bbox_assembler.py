@@ -103,20 +103,59 @@ def _feather_fast(mask_hw, px):
 
 def _feather_split(mask_adjust, feather):
     """
-    Fondu VERS L'EXTERIEUR (v1.8). Le masque est d'abord grossi de r puis
-    adouci d'un flou boite de rayon r, r = ceil(feather / 2) : alpha = 1 partout
-    dans le masque (apres mask_adjust), fondu sur ~feather px dehors, 0 au-dela.
+    Fondu VERS L'EXTERIEUR (v1.8) : le masque (apres mask_adjust) est grossi de
+    ceil(f/2) puis adouci d'un flou boite de rayon f // 2. Resultat : alpha = 1
+    partout dans le masque, fondu dehors, 0 au-dela de mask_adjust + f.
+    Avec mask_adjust = -f, rien ne sort du trait dessine (f pair ou impair).
     Avant v1.8 : fondu centre sur le bord (moitie dedans, ~50 % au bord).
     Renvoie (grow, rayon du flou).
     """
-    r = (int(feather) + 1) // 2
-    return int(mask_adjust) + r, r
+    f = int(feather)
+    return int(mask_adjust) + (f + 1) // 2, f // 2
 
 
 def alpha_from_mask(mask_hw, mask_adjust, feather):
-    """Alpha d'un calque (sans l'opacite). Partage avec Region Preview."""
+    """
+    Alpha d'un calque (sans l'opacite). Partage avec Region Preview.
+
+    Au-dela de 24 px de rayon, grow / flou passent par un chemin sous-echantillonne
+    (rapide mais approche) : on y impose explicitement les deux bornes de la regle,
+    1 dans le masque apres mask_adjust, 0 au-dela de mask_adjust + feather.
+    """
     grow, r = _feather_split(mask_adjust, feather)
-    return _feather_fast(_grow_shrink_fast(mask_hw, grow), r)
+    alpha = _feather_fast(_grow_shrink_fast(mask_hw, grow), r)
+    if abs(grow) > _EXACT_RADIUS or r > _EXACT_RADIUS:
+        # bornes exactes (distance de Chebyshev, comme le noyau carre du grow) :
+        #   1 dans le masque (>= 0,5) apres mask_adjust, 0 au-dela de
+        #   mask_adjust + feather du masque (> 0)
+        m = mask_hw.detach().cpu().numpy()
+        inner = torch.from_numpy(_cheb_band(m >= 0.5, int(mask_adjust)))
+        outer = torch.from_numpy(_cheb_band(m > 0, int(mask_adjust) + int(feather)))
+        alpha = torch.where(inner.to(alpha.device), torch.ones_like(alpha), alpha)
+        alpha = torch.where(outer.to(alpha.device), alpha, torch.zeros_like(alpha))
+    return alpha
+
+
+def _cheb_band(mask_bool, k):
+    """
+    Pixels a distance de Chebyshev <= k du masque (k >= 0), ou interieur du
+    masque erode de -k (k < 0). Le bord de l'image ne compte pas comme du vide
+    (comme le padding replicate du feather).
+    """
+    from scipy import ndimage
+    if not mask_bool.any():
+        return mask_bool.copy()
+    if k >= 0:
+        if mask_bool.all():
+            return mask_bool.copy()
+        return ndimage.distance_transform_cdt(~mask_bool, metric="chessboard") <= k
+    if mask_bool.all():
+        return mask_bool.copy()
+    return ndimage.distance_transform_cdt(mask_bool, metric="chessboard") > -k
+
+
+# Rayon max du chemin plein resolution de _grow_shrink_fast / _feather_fast.
+_EXACT_RADIUS = 24
 
 
 class BBoxMultipleAssembler:
@@ -165,8 +204,7 @@ class BBoxMultipleAssembler:
         comme avant.
     """
 
-    # Portee max du chemin plein resolution de _grow_shrink_fast / _feather_fast.
-    _WINDOW_MAX_RADIUS = 24
+    _WINDOW_MAX_RADIUS = _EXACT_RADIUS
     _use_window = True    # False : masque et checker sur toute la toile (reference des tests)
 
     INPUT_IS_LIST = True

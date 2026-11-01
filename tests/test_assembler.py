@@ -98,7 +98,8 @@ def test_batch_equals_separate_runs():
             assert torch.equal(t_full[b], t_one[0])
 
 
-@pytest.mark.parametrize("adj, fea", [(0, 8), (6, 8), (0, 5), (-8, 8), (20, 30), (0, 0)])
+@pytest.mark.parametrize("adj, fea", [(0, 8), (6, 8), (0, 5), (-8, 8), (-5, 5), (-7, 7), (-9, 9),
+                                      (20, 30), (13, 24), (6, 40), (0, 64), (0, 100), (-40, 16), (0, 0), (0, 1)])
 def test_feather_goes_outside(adj, fea):
     """
     Fondu vers l'exterieur : alpha = 1 dans tout le masque (apres mask_adjust),
@@ -120,6 +121,30 @@ def test_feather_goes_outside(adj, fea):
     outside = ndimage.distance_transform_cdt(~drawn, metric="chessboard")     # distance hors du trait
     if adj >= 0:
         assert a[drawn].min() == 1.0                                          # 100 % dans le trait
-    assert a[outside > max(0, adj) + fea + 1].max() == 0.0
+    assert a[outside > max(0, adj) + fea].max() == 0.0
     if adj == -fea:
         assert a[~drawn].max() == 0.0                                         # rien hors du trait
+
+
+@pytest.mark.parametrize("adj, fea", [(0, 8), (13, 24), (6, 40), (0, 64), (0, 100), (20, 30), (-40, 16),
+                                      (-5, 5), (-9, 9), (3, 7)])
+def test_feather_rule_direct(adj, fea):
+    """
+    Regle du fondu sur alpha_from_mask directement (sans la coupe du crop),
+    chemins plein resolution et sous-echantillonne : 1 dans le masque apres
+    mask_adjust, 0 au-dela de mask_adjust + feather. Masque en L qui touche
+    le bord de l'image.
+    """
+    from scipy import ndimage
+    from nodes.bbox_assembler import _grow_shrink_fast, alpha_from_mask
+    H, W = 400, 460
+    m = torch.zeros(H, W)
+    m[150:300, 0:120] = 1.0
+    m[150:200, 0:260] = 1.0
+    a = alpha_from_mask(m, adj, fea).numpy()
+    inside = _grow_shrink_fast(m, adj).numpy() >= 1.0
+    drawn = m.numpy() > 0
+    out = ndimage.distance_transform_cdt(~drawn, metric="chessboard")
+    if inside.any():
+        assert a[inside].min() == 1.0
+    assert a[out > max(0, adj) + fea].max() == 0.0

@@ -26,6 +26,7 @@ from PIL import Image
 import folder_paths
 from server import PromptServer
 
+from .ratio_outpaint import outpaint_layout
 from .resolution_plan import (MAX_PREVIEW_PIXELS, plan_from_layout, region_layout, report,
                               scaled_size, validate_settings)
 
@@ -42,19 +43,32 @@ class PreviewError(Exception):
         self.status = status
 
 
-def _size_only(path):
-    """Taille comme LoadImage la voit (orientation EXIF), sans decoder l'image."""
+def _size_only(path, name):
+    """
+    Taille comme LoadImage la voit, et nombre d'images. JPEG / WebP : en-tete +
+    orientation EXIF, sans decoder. PNG : en-tete (pas d'orientation EXIF lue :
+    Pillow decoderait toute l'image). Autres formats (TIFF...) : LoadImage
+    lui-meme, pour etre exact.
+    """
     with Image.open(path) as im:
         W, H = im.size
-        try:
-            if im.getexif().get(0x0112, 1) in (5, 6, 7, 8):   # rotation de 90 degres
-                W, H = H, W
-        except Exception:
-            pass
-    return W, H
+        fmt = (im.format or "").upper()
+        frames = getattr(im, "n_frames", 1)
+        if fmt in ("JPEG", "MPO", "WEBP"):
+            try:
+                if im.getexif().get(0x0112, 1) in (5, 6, 7, 8):   # rotation de 90 degres
+                    W, H = H, W
+            except Exception:
+                pass
+            return W, H, frames
+        if fmt == "PNG":
+            return W, H, frames
+    W, H, _ = _load_with_mask(name)
+    return W, H, frames
 
 
 def _load_with_mask(name):
+    """Image lue par le LoadImage de ComfyUI (meme decodage, masque = 1 - alpha)."""
     import nodes as comfy_nodes          # nodes.py de ComfyUI (pas le package du pack)
     image, mask = comfy_nodes.LoadImage().load_image(name)
     return int(image.shape[2]), int(image.shape[1]), mask
@@ -78,15 +92,22 @@ def _compute(name, use_mask, raw_settings):
         if lay is not None:
             _CACHE.move_to_end(key)
     if lay is None:
-        W, H = _size_only(path)
+        W, H, frames = _size_only(path, name)
         mask = None
         if use_mask:
+            # cout du chemin avec masque : canevas apres SCALE et outpaint, par image
             sw, sh = scaled_size(W, H, s["scale"])
-            if sw * sh > MAX_PREVIEW_PIXELS:
-                raise PreviewError(f"image x SCALE = {sw}x{sh} ({sw * sh / 1e6:.0f} MP) : "
-                                   f"regions du masque donnees au run (apercu limite a "
+            ol = outpaint_layout(sw, sh, s["ratio"], "none")
+            PW, PH = (ol[0], ol[1]) if ol else (sw, sh)
+            if frames > 1:
+                raise PreviewError("image animee : regions du masque donnees au run", 400)
+            if PW * PH > MAX_PREVIEW_PIXELS:
+                raise PreviewError(f"canevas {PW}x{PH} ({PW * PH / 1e6:.0f} MP) : regions du "
+                                   f"masque donnees au run (apercu limite a "
                                    f"{MAX_PREVIEW_PIXELS / 1e6:.0f} MP)", 400)
             W, H, mask = _load_with_mask(name)
+            if not bool((mask > 0).any()):
+                mask = None                   # pas d'alpha / masque vide : chemin direct
         lay = region_layout(W, H, mask, s["scale"], s["ratio"], s["regenerate_all"])
         with _LOCK:
             _CACHE[key] = lay

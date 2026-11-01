@@ -10,6 +10,8 @@ Sans dependance a ComfyUI (testable hors ComfyUI). Utilise par le panneau
 Resolution (route serveur pour l'apercu avant run, et execution du node).
 """
 
+import math
+
 import torch
 import torch.nn.functional as F
 
@@ -180,11 +182,13 @@ def validate_settings(raw):
     panneau. ValueError (message lisible) si une valeur sort des plages.
     """
     s = dict(DEFAULTS)
-    raw = raw or {}
+    raw = {} if raw is None else raw
+    if not isinstance(raw, dict):
+        raise ValueError("reglages : objet attendu")
 
     def num(key, kind, lo, hi):
         v = raw.get(key, s[key])
-        if isinstance(v, bool) or not isinstance(v, (int, float)):
+        if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v):
             raise ValueError(f"{key} : nombre attendu")
         v = kind(v)
         if not (lo <= v <= hi):

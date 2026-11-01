@@ -46,7 +46,11 @@ def test_validate_settings_bounds():
     assert ok["scale"] == 1.5 and ok["resolution"] == 1536
     for bad in ({"scale": 0}, {"scale": 9}, {"scale": "abc"}, {"resolution": 10 ** 9},
                 {"padding": -1}, {"ratio": "2:1"}, {"multiple": "12"}, {"context": "x"},
-                {"force_square": "false"}, {"scale": True}):
+                {"force_square": "false"}, {"scale": True}, {"resolution": float("inf")},
+                {"scale": float("nan")}):
+        with pytest.raises(ValueError):
+            validate_settings(bad)
+    for bad in ("x", [1], 3):
         with pytest.raises(ValueError):
             validate_settings(bad)
 
