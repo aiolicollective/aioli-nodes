@@ -538,7 +538,7 @@ For **ComfyUI Cloud**, where custom nodes can't be installed, a separate Nano Ba
 | `target_size` | `0` | Long-side target: `0` = none (cap 2048) · `512` · `768` · `1024` · `1536` · `2048` |
 | `use_image2` | `False` | Batch a second reference image alongside the crop |
 
-**Running locally?** The workflow uses `LoadImageOutput`, which works out-of-the-box on ComfyUI Cloud but may not be available in some local setups. If you hit an error on load, replace that node with a standard `Load Image` node — everything else stays the same.
+**Running locally?** The workflow uses `LoadImageOutput`, which works out-of-the-box on ComfyUI Cloud but may not be available in some local setups. If you hit an error on load, replace that node with a standard `Load Image` node — everything else stays the same. Locally it also needs ComfyUI Essentials (`MaskBoundingBox+`, `ImageCrop+`, `ImageResize+`, `GetImageSize+`, `MaskPreview+`), Impact Pack (`ImpactSwitch`), KJNodes (`GrowMaskWithBlur`) and ComfyMath (`CM_BoolToInt`), which ComfyUI Cloud ships.
 
 ---
 
