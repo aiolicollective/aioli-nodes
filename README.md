@@ -444,7 +444,7 @@ ImageToMask → ✂️ Mask Split Regions → 📐 Aioli Mask BBox → … per-r
 
 Judge two versions of a clip **frame by frame**: upscales (RTX VSR, SeedVR2, Topaz…), interpolations, model or setting versions. A and B are each a **VIDEO** (LoadVideo, any core video output) or an **IMAGE batch** (+ its fps).
 
-- **Modes:** wipe (drag the split) · side by side · difference (gain ×1 / ×4 / ×16) · toggle (click or `T`) · swap A ⇄ B.
+- **Modes:** wipe (drag the split) · side by side · difference (gain ×1 / ×4 / ×16) · toggle (`T`, or a click when not zoomed) · swap A ⇄ B.
 - **Play, scrub, step** (`space`, `←` / `→`), speed ×0.25 to ×2, loop. A and B always show the frame of the same instant: one clock for both, frame-exact; at different frame rates (×2 interpolation) each side shows its own frame for that instant. The shorter clip holds its last frame.
 - **Zoom** fit / 1:1 / 2:1 (mouse wheel); when zoomed, drag to pan (`shift` + drag in wipe mode).
 - **Lossless when paused:** playback uses JPEG proxies (long side ≤ 1280, 4:4:4); on pause, step and zoom the node shows the **full-resolution PNG frames** — the info line says `full resolution (lossless)`, and the difference is then computed on those pixels.
@@ -497,7 +497,7 @@ LoadImage (+ drawn mask) ──→ 📏 Resolution Panel ──settings──┐
 ```
 
 - **📏 Resolution Panel** at the root carries the sizing settings (OUTPUT SCALE, OUTPAINT RATIO, REGENERATE WHOLE IMAGE, MODEL SIZE, multiple, SQUARE, SHRINK BIG CROPS, padding, CONTEXT) and shows the whole chain to scale before you run.
-- **MASKED LATENT (test)** — Flux 3 Klein and Qwen only, off by default (off = the same execution graph as before, node for node). On, the sampler starts from the encoded crop with the region mask (`VAE Encode` → `Set Latent Noise Mask`, plus `Differential Diffusion`) instead of an empty latent, and the crop stays the reference. Outside the mask the latent is put back at every step, so the model can no longer slide or zoom the context. Try it on a case where you saw a shift at the seam. No effect without a mask. Qwen: keep `multiple = 32`.
+- **MASKED LATENT (test)** — Flux 3 Klein and Qwen only, off by default: the model then gets exactly the same inputs as before, so the same render. On, the sampler starts from the encoded crop with the region mask (`VAE Encode` → `Set Latent Noise Mask`, plus `Differential Diffusion`) instead of an empty latent, and the crop stays the reference. Outside the mask the latent is put back at every step, so the model can no longer slide or zoom the context. Try it on a case where you saw a shift at the seam. No effect without a mask. Qwen: keep `multiple = 32`.
 - The notes in each workflow list the models and the settings.
 
 **Needs** aioli-nodes ≥ 1.8.0 and [ComfyUI-KJNodes](https://github.com/kijai/ComfyUI-KJNodes) (`LazySwitchKJ`, `ImageResizeKJv2`); everything else is ComfyUI core (tested on ComfyUI 0.43.2, frontend 1.57.4, legacy canvas and Nodes 2.0).

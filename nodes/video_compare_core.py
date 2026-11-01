@@ -132,13 +132,12 @@ def content_digest(images, workers=4):
     ~5 Go/s sur 4 coeurs, 0,5 s pour 100 images 1080p en float32).
     """
     t = images.detach()
-    if t.device.type != "cpu":
-        t = t.cpu()
     frames = t if t.dim() == 4 else t.unsqueeze(0)
 
     def one(i):
-        raw = frames[i].contiguous().view(torch.uint8).numpy()   # octets bruts, sans conversion
-        return hashlib.sha1(memoryview(raw).cast("B")).digest()
+        f = frames[i].cpu().contiguous()                          # une image a la fois (GPU -> RAM)
+        raw = f.view(torch.uint8).numpy().reshape(-1)             # octets bruts, sans conversion
+        return hashlib.sha1(raw).digest()
 
     with ThreadPoolExecutor(max_workers=workers) as ex:
         parts = list(ex.map(one, range(int(frames.shape[0]))))
@@ -152,7 +151,9 @@ def signature(value):
     node est relance sur le meme contenu. Ne se trompe jamais :
       - IMAGE, ou video en memoire (VideoFromComponents) : empreinte exacte du
         contenu (une image modifiee sur place par un autre node est vue) ;
-      - fichier video sur disque : chemin, taille, date (ns), trim, recadrage ;
+      - fichier video sur disque : chemin, taille, dates de modification et de
+        changement (ns, la seconde est mise a jour par toute reecriture, meme
+        `cp -p`), inode, trim, recadrage ;
       - autre video en memoire : le MEME objet (reference faible, rien n'est
         retenu en memoire).
     Le fps d'une IMAGE n'en fait pas partie (donnee d'affichage).
@@ -172,7 +173,7 @@ def signature(value):
             if isinstance(src, str) and os.path.isfile(src):
                 st = os.stat(src)
                 return ("file", os.path.realpath(src), st.st_size, st.st_mtime_ns,
-                        tuple(value.get_active_trim_window()),
+                        st.st_ctime_ns, st.st_ino, tuple(value.get_active_trim_window()),
                         str(getattr(value, "_VideoFromFile__crop", None)))
         except Exception:
             pass
