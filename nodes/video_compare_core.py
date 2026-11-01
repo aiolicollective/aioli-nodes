@@ -1,17 +1,19 @@
 """
 Coeur du 🎞️ Aioli Video Compare (fonctions pures, testables hors ComfyUI).
 
-Lecture : sequence d'images sur <canvas>, synchro a l'image pres.
-  - proxys JPEG (cote long <= PROXY_SIDE, qualite PROXY_QUALITY) pour la
-    lecture, ecrits dans le dossier temp de ComfyUI et servis par /view ;
-  - image pleine resolution SANS PERTE (PNG) a la demande, pour l'image
-    courante (pause, pas a pas, zoom 1:1, difference).
-Pourquoi pas une <video> encodee (PyAV) : le 4:2:0 et la compression lissent
-precisement le detail qu'on veut juger (upscale), le mode difference montrerait
-le bruit d'encodage, et deux decodeurs video ne restent pas cales a l'image pres.
+Lecture : sequence d'images sur <canvas>, synchro a l'image pres. Pour chaque
+clip, chaque image est ecrite UNE fois dans le dossier temp de ComfyUI :
+  - <side>_<i>.jpg      proxy (cote long <= PROXY_SIDE, JPEG q90 4:4:4) : lecture ;
+  - <side>_full_<i>.png pleine resolution SANS PERTE (PNG, compression rapide) :
+                        pause, pas a pas, zoom, difference.
+Rien n'est garde en memoire apres l'execution. Une VIDEO venant d'un fichier
+est decodee en flux (PyAV, image par image) : jamais tout le clip en float32.
+
+Pourquoi pas une <video> encodee : le 4:2:0 et la compression lissent le detail
+qu'on veut juger (upscale), le mode difference montrerait le bruit d'encodage, et
+deux decodeurs video ne restent pas cales a l'image pres.
 """
 
-import io
 import os
 from concurrent.futures import ThreadPoolExecutor
 from fractions import Fraction
@@ -24,29 +26,7 @@ from .tensor_utils import to_uint8
 
 PROXY_SIDE = 1280
 PROXY_QUALITY = 90
-
-
-def frames_of(value, default_fps):
-    """
-    IMAGE (B, H, W, C) ou VIDEO (comfy_api VideoInput) -> (frames, fps).
-    frames : tensor (N, H, W, 3) float 0-1 ; fps : float.
-    """
-    if isinstance(value, torch.Tensor):
-        frames, fps = value, float(default_fps)
-    else:
-        comp = value.get_components()
-        frames = comp.images
-        rate = comp.frame_rate
-        fps = float(rate) if isinstance(rate, (Fraction, int, float)) else float(default_fps)
-    if frames.dim() == 3:
-        frames = frames.unsqueeze(0)
-    if frames.shape[-1] == 1:
-        frames = frames.repeat(1, 1, 1, 3)
-    elif frames.shape[-1] > 3:
-        frames = frames[..., :3]
-    if fps <= 0:
-        fps = float(default_fps)
-    return frames, fps
+PNG_LEVEL = 1
 
 
 def proxy_size(w, h, side=PROXY_SIDE):
@@ -55,36 +35,117 @@ def proxy_size(w, h, side=PROXY_SIDE):
     return max(1, round(w * s)), max(1, round(h * s))
 
 
-def frame_uint8(frames, i, size=None):
-    """Image i en uint8 (H, W, 3), redimensionnee (Lanczos) si size != taille."""
-    arr = to_uint8(frames[i].detach().cpu().float().numpy())
-    if size is not None and (arr.shape[1], arr.shape[0]) != tuple(size):
-        arr = np.array(Image.fromarray(arr).resize(tuple(size), Image.LANCZOS))
-    return arr
+def _as_fps(rate, default_fps):
+    try:
+        fps = float(rate)
+    except (TypeError, ValueError):
+        return float(default_fps)
+    return fps if fps > 0 else float(default_fps)
 
 
-def write_proxies(frames, folder, prefix, size, workers=4):
-    """Ecrit les proxys JPEG prefix_000000.jpg ... dans folder. Renvoie le nombre."""
+def _rgb8(arr):
+    """(H, W, C) uint8 -> (H, W, 3) uint8."""
+    if arr.ndim == 2:
+        arr = arr[..., None]
+    if arr.shape[-1] == 1:
+        arr = np.repeat(arr, 3, axis=-1)
+    return np.ascontiguousarray(arr[..., :3])
+
+
+def iter_frames(value, default_fps):
+    """
+    IMAGE (B, H, W, C) ou VIDEO (comfy_api VideoInput) -> (fps, iterateur d'images
+    uint8 (H, W, 3)). VIDEO d'un fichier : decodage en flux par PyAV ; sinon
+    get_components() (tout en memoire, comme le reste de ComfyUI).
+    """
+    if isinstance(value, torch.Tensor):
+        t = value if value.dim() == 4 else value.unsqueeze(0)
+        return float(default_fps), (_rgb8(to_uint8(t[i].detach().cpu().float().numpy()))
+                                    for i in range(int(t.shape[0])))
+    src = _file_source(value)
+    if src is not None:
+        import av
+        if hasattr(src, "seek"):
+            src.seek(0)
+        container = av.open(src)
+        stream = container.streams.video[0]
+        fps = _as_fps(stream.average_rate or stream.guessed_rate, default_fps)
+
+        def gen():
+            try:
+                for frame in container.decode(stream):
+                    yield _rgb8(frame.to_ndarray(format="rgb24"))
+            finally:
+                container.close()
+        return fps, gen()
+    comp = value.get_components()
+    images = comp.images if comp.images.dim() == 4 else comp.images.unsqueeze(0)
+    return _as_fps(comp.frame_rate, default_fps), (
+        _rgb8(to_uint8(images[i].detach().cpu().float().numpy())) for i in range(int(images.shape[0])))
+
+
+def _file_source(value):
+    """
+    Source a decoder en flux, seulement pour une VIDEO qui EST un fichier sans
+    decoupage (trim) : sinon get_stream_source() ignorerait le trim, ou
+    reencoderait en H.264 (avec perte) une video faite d'images.
+    """
+    if type(value).__name__ != "VideoFromFile":
+        return None
+    try:
+        if tuple(value.get_active_trim_window()) != (0.0, 0.0):
+            return None
+        return value.get_stream_source()
+    except Exception:
+        return None
+
+
+def write_clip(frames, folder, prefix, workers=4):
+    """
+    Ecrit proxys JPEG et images pleine resolution PNG d'un clip, en flux.
+    Renvoie (n, largeur, hauteur). ValueError si le clip est vide.
+    """
     os.makedirs(folder, exist_ok=True)
+    first = next(frames, None)
+    if first is None:
+        raise ValueError(f"{prefix.upper()} has no frames")
+    h, w = first.shape[:2]
+    pw, ph = proxy_size(w, h)
 
-    def one(i):
-        arr = frame_uint8(frames, i, size)
-        Image.fromarray(arr).save(os.path.join(folder, f"{prefix}_{i:06d}.jpg"),
-                                  quality=PROXY_QUALITY, subsampling=0)
+    def save(item):
+        i, arr = item
+        im = Image.fromarray(arr)
+        im.save(os.path.join(folder, f"{prefix}_full_{i:06d}.png"), compress_level=PNG_LEVEL)
+        if (pw, ph) != (w, h):
+            im = im.resize((pw, ph), Image.LANCZOS)
+        im.save(os.path.join(folder, f"{prefix}_{i:06d}.jpg"), quality=PROXY_QUALITY, subsampling=0)
 
-    n = int(frames.shape[0])
+    n = 0
     with ThreadPoolExecutor(max_workers=workers) as ex:
-        list(ex.map(one, range(n)))
-    return n
+        pending = []
+        for i, arr in enumerate(_chain(first, frames)):
+            if arr.shape[:2] != (h, w):
+                raise ValueError(f"{prefix.upper()}: frame {i} is {arr.shape[1]}x{arr.shape[0]}, "
+                                 f"expected {w}x{h}")
+            pending.append(ex.submit(save, (i, arr)))
+            n += 1
+            if len(pending) >= workers * 4:          # borne la memoire en vol
+                pending.pop(0).result()
+        for f in pending:
+            f.result()
+    return n, w, h
 
 
-def full_png(frames, i, size=None):
-    """Image i pleine resolution en PNG sans perte (bytes)."""
-    buf = io.BytesIO()
-    Image.fromarray(frame_uint8(frames, i, size)).save(buf, format="PNG", compress_level=1)
-    return buf.getvalue()
+def _chain(first, rest):
+    yield first
+    yield from rest
 
 
-def describe(frames, fps, label):
-    n, h, w = int(frames.shape[0]), int(frames.shape[1]), int(frames.shape[2])
-    return dict(label=str(label), n=n, fps=fps, w=w, h=h, duration=n / fps)
+def display_geometry(a, b):
+    """Geometrie d'affichage commune : la plus grande des deux (en pixels)."""
+    return (a["w"], a["h"]) if a["w"] * a["h"] >= b["w"] * b["h"] else (b["w"], b["h"])
+
+
+def same_clock(fa, fb, rel=1e-3):
+    """Deux fps a moins de 0,1 % l'un de l'autre (29.97 / 30000/1001) : une seule horloge."""
+    return abs(fa - fb) <= rel * max(fa, fb)

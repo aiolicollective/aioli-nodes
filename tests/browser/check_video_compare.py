@@ -4,13 +4,15 @@ puis en Nodes 2.0. Hors pytest (ComfyUI lance avec aioli-nodes + Playwright) :
 
     python tests/browser/check_video_compare.py [--url ...] [--chromium ...] [--shots dossier]
 
-Deux clips de test (48 images, 640x360, 24 fps) sont ecrits dans input/ ; le
-numero d'image est inscrit en gris dans un carre. Pendant la lecture, le script
-lit ce carre a gauche (A) et a droite (B) dans le canvas : A et B doivent montrer
-la meme image a chaque instant (synchro a l'image pres). Il verifie aussi le pas
-a pas, la pleine resolution sans perte en pause / 1:1, et l'absence d'erreur
-console. Effets de bord : 2 fichiers dans input/, des runs (sans modele), le
-reglage Comfy.VueNodes.Enabled bascule puis revient a sa valeur effective.
+Clips de test ecrits dans input/ : A (48 images, 24 fps), B identique en duree
+(48 images, 24 fps) et B "interpolation x2" (96 images, 48 fps). Le numero
+d'image est inscrit en gris dans un carre. Pendant la lecture, le script lit ce
+carre a gauche (A) et a droite (B) dans le canvas : a fps egaux A et B montrent
+la meme image ; en x2, B montre l'image 2a ou 2a+1. Il verifie aussi le pas a
+pas, la pleine resolution sans perte en pause, aucune reponse 404 (pas de
+tempete de requetes) et aucune erreur console. Effets de bord : 3 fichiers dans
+input/, des runs (sans modele), le reglage Comfy.VueNodes.Enabled bascule puis
+revient a sa valeur effective.
 """
 
 import argparse
@@ -24,11 +26,13 @@ import uuid
 
 import numpy as np
 
-CLIPS = ("aioli_vc_check_a.mp4", "aioli_vc_check_b.mp4")
-N, W, H, FPS = 48, 640, 360, 24
+CLIPS = {"a": ("aioli_vc_check_a.mp4", 48, 24, 4), "b": ("aioli_vc_check_b.mp4", 48, 24, 4),
+         "x2": ("aioli_vc_check_x2.mp4", 96, 48, 2)}         # nom, images, fps, pas du gris
+W, H = 640, 360
 
 
 def make_clip(variant):
+    _, N, FPS, STEP = CLIPS[variant]
     import av
     buf = io.BytesIO()
     out = av.open(buf, "w", format="mp4")
@@ -40,8 +44,8 @@ def make_clip(variant):
         img = np.zeros((H, W, 3), np.uint8)
         img[..., 0] = (xx + i * 8) % 256
         img[..., 1] = (yy * 2 + i * 4) % 256
-        img[..., 2] = 160 if variant == "b" else 128
-        img[30:110, 30:110, :] = 20 + 4 * i               # numero d'image
+        img[..., 2] = 128 if variant == "a" else 160
+        img[30:110, 30:110, :] = 20 + STEP * i            # numero d'image
         for p in st.encode(av.VideoFrame.from_ndarray(img, format="rgb24")):
             out.mux(p)
     for p in st.encode():
@@ -84,7 +88,8 @@ READ = """(id) => {
   const x = (cw / 2 - W * s) / 2, y = (ch - H * s) / 2;
   const g = (px, py) => ctx.getImageData(Math.round(px), Math.round(py), 1, 1).data[1];
   const va = g(x + 70 * s, y + 70 * s), vb = g(cw / 2 + x + 70 * s, y + 70 * s);
-  return { a: Math.round((va - 20) / 4), b: Math.round((vb - 20) / 4), ia: S.shown.ia, ib: S.shown.ib,
+  const stepB = S.meta.b.fps > S.meta.a.fps ? 2 : 4;
+  return { a: Math.round((va - 20) / 4), b: Math.round((vb - 20) / stepB), ia: S.shown.ia, ib: S.shown.ib,
            info: n.widgets.find(w => w.name === "video_compare").element.querySelector(".aioli-vc-info").textContent };
 }"""
 
@@ -108,7 +113,7 @@ def main():
     ap.add_argument("--shots")
     args = ap.parse_args()
     url = args.url.rstrip("/")
-    for name, v in zip(CLIPS, "ab"):
+    for v, (name, *_r) in CLIPS.items():
         upload(url, name, make_clip(v))
 
     def set_vue(v):
@@ -128,53 +133,56 @@ def main():
             vue_before = bool(p0.evaluate("() => window.app.extensionManager.setting.get('Comfy.VueNodes.Enabled')"))
             p0.close()
             for mode, vue in (("legacy", False), ("nodes2", True)):
-                set_vue(vue)
-                page = browser.new_context(viewport={"width": 1400, "height": 950}).new_page()
-                errs = []
-                page.on("pageerror", lambda e, errs=errs: errs.append(str(e)))
-                page.on("console", lambda m, errs=errs: errs.append(m.text)
-                        if m.type == "error" and "Failed to load resource" not in m.text else None)
-                page.goto(url)
-                page.wait_for_function("() => window.app && window.app.graph", timeout=60000)
-                time.sleep(3)
-                page.keyboard.press("Escape")
-                vid = page.evaluate(BUILD, list(CLIPS))
-                page.wait_for_function(f"() => window.app.graph.getNodeById({vid})._aioliVC.meta", timeout=120000)
-                page.evaluate(CTRL, [vid, "mode", "side"])
-                time.sleep(2)
-                page.evaluate(CTRL, [vid, "click", 0])           # lecture
-                samples = []
-                for _ in range(25):
-                    time.sleep(0.09)
-                    samples.append(page.evaluate(READ, vid))
-                page.evaluate(CTRL, [vid, "click", 0])           # pause
-                time.sleep(0.5)
-                desync = [s for s in samples if s["a"] != s["b"]]
-                moved = len({s["a"] for s in samples})
-                r0 = page.evaluate(READ, vid)
-                page.evaluate(CTRL, [vid, "key", "ArrowRight"])
-                time.sleep(1)
-                r1 = page.evaluate(READ, vid)
-                page.evaluate(CTRL, [vid, "zoom", "1"])
-                time.sleep(2.5)
-                full = "full resolution" in page.evaluate(READ, vid)["info"]
-                page.evaluate(CTRL, [vid, "zoom", "fit"])
-                shots = {}
-                if args.shots:
-                    os.makedirs(args.shots, exist_ok=True)
-                    for m in ("wipe", "side", "diff"):
-                        page.evaluate(CTRL, [vid, "mode", m])
-                        time.sleep(1.5)
-                        el = page.locator(f'[data-node-id="{vid}"]') if vue else None
-                        path = os.path.join(args.shots, f"vc_{mode}_{m}.png")
-                        (el.screenshot(path=path) if el and el.count() else page.screenshot(path=path))
-                        shots[m] = path
-                res = dict(samples=len(samples), distinct_frames=moved, desync=len(desync),
-                           step=(r0["ia"], r1["ia"]), full_on_pause=full, console_errors=errs)
-                good = (moved >= 5 and not desync and r1["ia"] == r0["ia"] + 1 and full and not errs)
-                ok &= good
-                print(f"[{mode}] {'OK' if good else 'ECHEC'} {res}" + (f" desync: {desync[:3]}" if desync else ""))
-                page.context.close()
+                for case, clip_b in (("same fps", "b"), ("interpolation x2", "x2")):
+                    set_vue(vue)
+                    page = browser.new_context(viewport={"width": 1400, "height": 950}).new_page()
+                    errs, gone = [], []
+                    page.on("pageerror", lambda e, errs=errs: errs.append(str(e)))
+                    page.on("console", lambda m, errs=errs: errs.append(m.text)
+                            if m.type == "error" and "Failed to load resource" not in m.text else None)
+                    page.on("response", lambda r, gone=gone: gone.append(r.url)
+                            if r.status == 404 and "aioli_vcmp" in r.url else None)   # nos images seulement
+                    page.goto(url)
+                    page.wait_for_function("() => window.app && window.app.graph", timeout=60000)
+                    time.sleep(3)
+                    page.keyboard.press("Escape")
+                    vid = page.evaluate(BUILD, [CLIPS["a"][0], CLIPS[clip_b][0]])
+                    page.wait_for_function(f"() => window.app.graph.getNodeById({vid})._aioliVC.meta", timeout=120000)
+                    page.evaluate(CTRL, [vid, "mode", "side"])
+                    time.sleep(2)
+                    page.evaluate(CTRL, [vid, "click", 0])           # lecture
+                    samples = []
+                    for _ in range(25):
+                        time.sleep(0.09)
+                        samples.append(page.evaluate(READ, vid))
+                    page.evaluate(CTRL, [vid, "click", 0])           # pause
+                    time.sleep(2)
+                    if clip_b == "x2":
+                        desync = [x for x in samples if x["b"] // 2 != x["a"]]
+                    else:
+                        desync = [x for x in samples if x["a"] != x["b"]]
+                    moved = len({x["a"] for x in samples})
+                    paused = page.evaluate(READ, vid)
+                    full_fit = "full resolution" in paused["info"]   # pause en "fit" : sans perte
+                    page.evaluate(CTRL, [vid, "key", "ArrowRight"])
+                    time.sleep(1.5)
+                    r1 = page.evaluate(READ, vid)
+                    stepped = r1["ia"] == paused["ia"] + 1 or (clip_b == "x2" and r1["ib"] == paused["ib"] + 1)
+                    if args.shots and case == "same fps":
+                        os.makedirs(args.shots, exist_ok=True)
+                        for m in ("wipe", "side", "diff"):
+                            page.evaluate(CTRL, [vid, "mode", m])
+                            time.sleep(1.5)
+                            el = page.locator(f'[data-node-id="{vid}"]') if vue else None
+                            path = os.path.join(args.shots, f"vc_{mode}_{m}.png")
+                            (el.screenshot(path=path) if el and el.count() else page.screenshot(path=path))
+                    res = dict(samples=len(samples), distinct_frames=moved, desync=len(desync),
+                               step_ok=stepped, full_on_pause=full_fit, http_404=len(gone), console_errors=errs)
+                    good = (moved >= 5 and not desync and stepped and full_fit and not gone and not errs)
+                    ok &= good
+                    print(f"[{mode}] {case}: {'OK' if good else 'ECHEC'} {res}"
+                          + (f" desync: {desync[:3]}" if desync else ""))
+                    page.context.close()
             browser.close()
     finally:
         if vue_before is not None:
