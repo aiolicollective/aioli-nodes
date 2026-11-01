@@ -78,3 +78,11 @@ def test_quiet_is_per_thread():
         t.join()
     assert sys.stdout is stdout
     assert buf.getvalue() == "visible\n"
+
+
+def test_summary_uses_real_model_size():
+    """Resume : taille modele reelle (SHRINK BIG CROPS off -> plafond 4,2 MP), pas MODEL SIZE^2."""
+    on = report(plan(3000, 2000, None, resolution=1024, force_target_downscale=True))
+    off = report(plan(3000, 2000, None, resolution=1024, force_target_downscale=False))
+    assert "model 1.0 MP" in on
+    assert "model 4.2 MP" in off

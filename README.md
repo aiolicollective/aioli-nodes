@@ -210,8 +210,11 @@ Before a run, the diagram follows the settings as you change them (regions from 
 
 **Two settings that are easy to mix up**
 - **OUTPUT SCALE** sets the size of the final image (source × scale). It never changes how much the model works.
-- **MODEL SIZE** is the model's working size per region, as a **square equivalent**: `1024` = as many pixels as 1024 × 1024 (≈ 1 MP), whatever the ratio of the crop. A smaller crop is enlarged to it. A larger crop is shrunk to it only if **SHRINK BIG CROPS** is on — otherwise it keeps its native size, capped at 2048² (4.2 MP).
-- Whole-image edit: raising OUTPUT SCALE without raising MODEL SIZE (or turning SHRINK BIG CROPS off) makes the model's slips bigger in the result.
+- **MODEL SIZE** is the model's working size per region, as a **square equivalent**: `1024` = as many pixels as 1024 × 1024 (≈ 1 MP), whatever the ratio of the crop. A smaller crop is enlarged to it. A larger crop is shrunk to it only if **SHRINK BIG CROPS** is on — otherwise it keeps its native size, capped at 2048² (4.2 MP), or MODEL SIZE² above 2048.
+- Whole-image edit: the more the crop is shrunk for the model, the bigger a slip of the model becomes in the result. Raising OUTPUT SCALE without raising MODEL SIZE makes it worse; turning SHRINK BIG CROPS off reduces it (the model then works up to 4.2 MP).
+- The summary line of the panel gives both: `output 4500×3000 · model 1.0 MP`.
+
+**Preview limits** — before a run, regions come from the mask of the **same LoadImage** as the image (alpha channel). Above a 40 MP canvas (after OUTPUT SCALE and outpaint) or for an animated image, mask regions are only shown after a run. A setting fed by a link (primitive, subgraph input) is previewed with the panel's own widget value; the run uses the real one, and the panel then shows the run's values.
 
 **Inputs** (outputs: the same values, same names, plus `report`)
 | Parameter | Type | Description |

@@ -153,9 +153,13 @@ def _warnings(lay, regions, sw, sh, PW, PH):
     return w
 
 
-def model_mp(s):
-    """Megapixels de la taille modele visee (equivalent carre)."""
-    return s["resolution"] ** 2 / 1e6
+def model_summary(p):
+    """Taille modele reelle des regions (pas MODEL SIZE^2 : plafond, SHRINK off...)."""
+    mps = [r["model"][0] * r["model"][1] / 1e6 for r in p["regions"]]
+    if not mps:
+        return "-"
+    lo, hi = min(mps), max(mps)
+    return f"{hi:.1f} MP" if hi - lo < 0.05 else f"{lo:.1f}-{hi:.1f} MP per region"
 
 
 def report(p):
@@ -167,8 +171,7 @@ def report(p):
              + (f" -> OUTPUT SCALE x{s['scale']:g} = {sw}x{sh}" if [sw, sh] != p["source"] else "")
              + (f" -> outpaint {s['ratio']} = {PW}x{PH} (original {p['coverage']:.0f} %)"
                 if [PW, PH] != [sw, sh] else ""),
-             f"output {PW}x{PH} - model ~{model_mp(s):.1f} MP per region"
-             + (f" ({s['resolution']}^2)" if s["resolution"] else " (native size)")]
+             f"output {PW}x{PH} - model {model_summary(p)}"]
     for r in p["regions"]:
         x, y, w, h = r["bbox"]
         cx, cy, cw, ch = r["crop"]

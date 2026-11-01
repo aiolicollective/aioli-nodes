@@ -32,9 +32,9 @@ class AioliResolutionPanel(io.ComfyNode):
             is_output_node=True,
             inputs=[
                 io.Image.Input("image", optional=True,
-                               tooltip="Image source (LoadImage) : sa taille sert au schema."),
+                               tooltip="Source image (LoadImage): its size drives the diagram."),
                 io.Mask.Input("mask", optional=True,
-                              tooltip="Masque dessine (sortie MASK du LoadImage) : regions du schema."),
+                              tooltip="Drawn mask (MASK output of the same LoadImage): regions of the diagram."),
                 io.Float.Input("scale", default=1.0, min=0.01, max=8.0, step=0.01,
                                display_name="OUTPUT SCALE",
                                tooltip="Size of the final image = source x this factor. "
@@ -53,7 +53,7 @@ class AioliResolutionPanel(io.ComfyNode):
                 io.Boolean.Input("force_target_downscale", default=True,
                                  display_name="SHRINK BIG CROPS",
                                  tooltip="On: a crop larger than MODEL SIZE^2 is shrunk to it. Off: it keeps "
-                                         "its native size, capped at 2048^2 (4.2 MP)."),
+                                         "its native size, capped at 2048^2 (4.2 MP), or MODEL SIZE^2 above 2048."),
                 io.Int.Input("padding", default=48, min=0, max=4096,
                              tooltip="Margin around each region's bbox (px). Keep it >= mask_adjust + "
                                      "feather of the assembler, or the fade is cut at the crop edge."),

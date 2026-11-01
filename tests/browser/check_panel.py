@@ -10,8 +10,14 @@ Pas un test pytest (il faut un ComfyUI lance, avec aioli-nodes, et Playwright) :
                                         [--workflow wf.json] [--shots dossier]
 
 --workflow : un wf V2 avec un node subgraph ; le panneau est branche sur ses
-entrees et le prompt est valide par le serveur (aucune erreur de type attendue).
-Le reglage Comfy.VueNodes.Enabled de l'utilisateur est remis a sa valeur a la fin.
+entrees, le prompt est construit par le frontend (graphToPrompt) mais JAMAIS
+envoye : chaque entree alimentee par le panneau est verifiee contre son type
+dans /object_info, avec la regle du serveur (une sortie "*" passe partout, une
+sortie "COMBO" vers une liste d'options est refusee).
+
+Effets de bord (outil manuel) : ecrit aioli_panel_check.png dans input/ (ecrase),
+lance deux petits runs de la chaine aioli (sans modele), bascule le reglage
+Comfy.VueNodes.Enabled et le remet a sa valeur effective du debut.
 """
 
 import argparse
@@ -80,15 +86,33 @@ SUBGRAPH = """async () => {
     const oo = p.findOutputSlot(o), ii = sg.findInputSlot(i);
     linked[i] = oo >= 0 && ii >= 0 ? !!p.connect(oo, sg, ii) : "absent";
   }
-  const prompt = await app.graphToPrompt();
-  const resp = await fetch("/api/prompt", { method: "POST", headers: { "Content-Type": "application/json" },
-                                            body: JSON.stringify({ prompt: prompt.output, client_id: "aioli-check", validate_only: true }) });
-  const body = await resp.json();
-  const types = [];
-  for (const ne of Object.values(body.node_errors || {}))
-    for (const e of ne.errors || []) types.push(`${ne.class_type}:${e.type}:${e.extra_info?.input_name ?? ""}`);
-  return { linked, error_types: types };
+  const prompt = await app.graphToPrompt();            // jamais envoye au serveur
+  const uses = [];
+  for (const [id, n] of Object.entries(prompt.output))
+    for (const [inp, v] of Object.entries(n.inputs || {}))
+      if (Array.isArray(v) && String(v[0]) === String(p.id)) uses.push([n.class_type, inp, v[1]]);
+  return { linked, uses };
 }"""
+
+
+def type_errors(url, uses):
+    """
+    Regle de validate_node_input (comfy_execution/validation.py) pour chaque
+    entree alimentee par le panneau : type de sortie du panneau vs type attendu.
+    """
+    info = json.loads(api(url, "/api/object_info"))
+    out_types = info["AioliResolutionPanel"]["output"]
+    errs = []
+    for cls, inp, slot in uses:
+        spec = info.get(cls, {}).get("input", {})
+        want = (spec.get("required", {}).get(inp) or spec.get("optional", {}).get(inp) or [None])[0]
+        got = out_types[slot]
+        ok = (got == want or got == "*" or want == "*"
+              or (isinstance(want, str) and isinstance(got, str)
+                  and set(t.strip() for t in got.split(",")) & set(t.strip() for t in want.split(","))))
+        if not ok:
+            errs.append(f"{cls}.{inp}: {got} -> {want if isinstance(want, str) else 'liste'}")
+    return errs
 
 
 def api(url, path, data=None, method=None, headers=None):
@@ -123,8 +147,7 @@ def main():
     url = args.url.rstrip("/")
 
     upload_image(url)
-    settings = json.loads(api(url, "/api/settings"))
-    vue_before = settings.get("Comfy.VueNodes.Enabled", False)
+    vue_before = None
 
     def set_vue(v):
         api(url, "/api/settings/Comfy.VueNodes.Enabled", json.dumps(v).encode(), "POST",
@@ -137,6 +160,13 @@ def main():
             if args.chromium:
                 launch["executable_path"] = args.chromium
             browser = pw.chromium.launch(**launch)
+            # valeur effective du reglage (defaut compris), pour la remettre a la fin
+            page0 = browser.new_page()
+            page0.goto(url)
+            page0.wait_for_function("() => window.app && window.app.extensionManager", timeout=60000)
+            vue_before = bool(page0.evaluate(
+                "() => window.app.extensionManager.setting.get('Comfy.VueNodes.Enabled')"))
+            page0.close()
             for mode, vue in (("legacy", False), ("nodes2", True)):
                 set_vue(vue)
                 page = browser.new_context(viewport={"width": 1500, "height": 950}).new_page()
@@ -182,14 +212,16 @@ def main():
                     page.keyboard.press("Escape")
                     sg = page.evaluate(SUBGRAPH)
                     res["subgraph_links"] = sg.get("linked")
-                    res["type_errors"] = [t for t in sg.get("error_types", []) if "type_mismatch" in t]
+                    res["type_errors"] = type_errors(url, sg.get("uses", []))
+                    res["inputs_checked"] = len(sg.get("uses", []))
                 good = (res["status"] == "success" and res["image"] and res["preview_ok"]
                         and res["run_equals_preview"] and not errs and not res.get("type_errors"))
                 ok &= good
                 print(f"[{mode}] {'OK' if good else 'ECHEC'} {res}")
             browser.close()
     finally:
-        set_vue(vue_before)
+        if vue_before is not None:
+            set_vue(vue_before)
     sys.exit(0 if ok else 1)
 
 

@@ -14,6 +14,10 @@ import { api } from "../../scripts/api.js";
 const NODE_TYPE = "AioliResolutionPanel";
 const PARAMS = ["scale", "ratio", "regenerate_all", "resolution", "multiple",
                 "force_square", "force_target_downscale", "padding", "context"];
+// libelles affiches des reglages (avertissement "linked")
+const LABELS = { scale: "OUTPUT SCALE", ratio: "OUTPAINT RATIO", regenerate_all: "REGENERATE WHOLE IMAGE",
+                 resolution: "MODEL SIZE", multiple: "multiple", force_square: "SQUARE",
+                 force_target_downscale: "SHRINK BIG CROPS", padding: "padding", context: "CONTEXT" };
 const PALETTE = ["#ff3333", "#33ccff", "#66ff4d", "#ffd91a", "#e64dff", "#ff8c00", "#33ffcc", "#ff66b3"];
 const POLL_MS = 400;
 const DIAGRAM_H = 210;
@@ -169,8 +173,10 @@ function draw(state) {
   if (sw !== plan.source[0] || sh !== plan.source[1]) chain += ` → OUTPUT SCALE ×${st.scale} = ${size(plan.scaled)}`;
   if (PW !== sw || PH !== sh) chain += ` → ${st.ratio} = ${size(plan.padded)} (original ${Math.round(plan.coverage)} %)`;
   // Resume : deux roles qu'on confond facilement (OUTPUT SCALE / MODEL SIZE).
-  const mp = st.resolution ? `~${(st.resolution * st.resolution / 1e6).toFixed(1)} MP per region (${st.resolution}²)`
-                           : "native size per region";
+  // taille modele REELLE des regions (plafond, SHRINK BIG CROPS off...), pas MODEL SIZE²
+  const mps = plan.regions.map((r) => r.model[0] * r.model[1] / 1e6);
+  const lo = Math.min(...mps), hi = Math.max(...mps);
+  const mp = !mps.length ? "-" : hi - lo < 0.05 ? `${hi.toFixed(1)} MP` : `${lo.toFixed(1)}–${hi.toFixed(1)} MP per region`;
   const summary = `output <b>${size(plan.padded)}</b> · model <b>${mp}</b>`;
   const rows = [`<div class="aioli-rp-summary">${summary}</div>`,
                 `<div class="aioli-rp-chain">${esc(chain)}</div>`];
@@ -185,7 +191,7 @@ function draw(state) {
               ` · ${rs}${bands} <span class="aioli-rp-dim">(bbox ${size(r.bbox.slice(2))})</span></div>`);
   });
   for (const w of plan.warnings || []) rows.push(`<div class="aioli-rp-warn">⚠ ${esc(w)}</div>`);
-  for (const p of state.linked || []) rows.push(`<div class="aioli-rp-warn">⚠ ${esc(p)} is linked: preview uses the widget value, the real one is known at run time</div>`);
+  for (const p of state.linked || []) rows.push(`<div class="aioli-rp-warn">⚠ ${esc(LABELS[p] || p)} is linked: preview uses the widget value, the real one is known at run time</div>`);
   rows.push(`<div class="aioli-rp-origin">${plan.origin === "run" ? "values of the last run" : "preview before run"}</div>`);
   text.innerHTML = rows.join("");
 }
