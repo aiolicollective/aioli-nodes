@@ -16,6 +16,7 @@ qu'on veut juger (upscale), le mode difference montrerait le bruit d'encodage, e
 deux decodeurs video ne restent pas cales a l'image pres.
 """
 
+import hashlib
 import os
 import weakref
 from concurrent.futures import ThreadPoolExecutor
@@ -125,18 +126,47 @@ def same_clock(fa, fb, rel=1e-4):
     return abs(fa - fb) <= rel * max(fa, fb)
 
 
+def content_digest(images, workers=4):
+    """
+    Empreinte exacte d'un batch d'images (sha1 de chaque image, en parallele :
+    ~5 Go/s sur 4 coeurs, 0,5 s pour 100 images 1080p en float32).
+    """
+    t = images.detach()
+    if t.device.type != "cpu":
+        t = t.cpu()
+    frames = t if t.dim() == 4 else t.unsqueeze(0)
+
+    def one(i):
+        raw = frames[i].contiguous().view(torch.uint8).numpy()   # octets bruts, sans conversion
+        return hashlib.sha1(memoryview(raw).cast("B")).digest()
+
+    with ThreadPoolExecutor(max_workers=workers) as ex:
+        parts = list(ex.map(one, range(int(frames.shape[0]))))
+    head = repr((tuple(frames.shape), str(frames.dtype))).encode()
+    return hashlib.sha1(head + b"".join(parts)).hexdigest()
+
+
 def signature(value):
     """
     Identite d'une entree, pour reutiliser les images deja ecrites quand le
-    node est relance SANS changement. Ne se trompe jamais :
+    node est relance sur le meme contenu. Ne se trompe jamais :
+      - IMAGE, ou video en memoire (VideoFromComponents) : empreinte exacte du
+        contenu (une image modifiee sur place par un autre node est vue) ;
       - fichier video sur disque : chemin, taille, date (ns), trim, recadrage ;
-      - tout le reste (IMAGE, video en memoire) : le MEME objet que la fois
-        precedente (reference faible : rien n'est retenu en memoire). Quand
-        l'amont n'a pas change, ComfyUI transmet exactement le meme objet ;
-        sinon les images sont reecrites.
-    Le fps n'en fait pas partie (donnee d'affichage).
+      - autre video en memoire : le MEME objet (reference faible, rien n'est
+        retenu en memoire).
+    Le fps d'une IMAGE n'en fait pas partie (donnee d'affichage).
     """
-    if type(value).__name__ == "VideoFromFile":
+    if isinstance(value, torch.Tensor):
+        return ("image", content_digest(value))
+    name = type(value).__name__
+    if name == "VideoFromComponents":
+        try:
+            comp = value.get_components()               # composants stockes, sans decodage
+            return ("components", content_digest(comp.images), str(comp.frame_rate))
+        except Exception:
+            pass
+    if name == "VideoFromFile":
         try:
             src = value.get_stream_source()          # chemin ou BytesIO, sans decodage
             if isinstance(src, str) and os.path.isfile(src):
@@ -147,15 +177,18 @@ def signature(value):
         except Exception:
             pass
     try:
-        return weakref.ref(value)
+        return ("object", weakref.ref(value))
     except TypeError:
         return None                                   # pas de reutilisation possible
 
 
-def same_input(sig, value):
-    """L'entree courante correspond-elle a cette identite ?"""
+def same_input(sig, value, current=None):
+    """
+    L'entree courante correspond-elle a cette identite ? `current` : la
+    signature deja calculee de `value` (evite de la recalculer).
+    """
     if sig is None:
         return False
-    if isinstance(sig, weakref.ref):
-        return sig() is value
-    return sig == signature(value)
+    if sig[0] == "object":
+        return sig[1]() is value
+    return sig == (current if current is not None else signature(value))

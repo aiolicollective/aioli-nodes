@@ -49,14 +49,25 @@ def test_geometry_and_clock():
 
 
 def test_signature_never_reuses_changed_content(tmp_path):
-    """Reutilisation seulement pour le MEME objet, ou le meme fichier inchange."""
+    """Reutilisation seulement pour le meme contenu exact (ou le meme fichier inchange)."""
     from nodes.video_compare_core import same_input, signature
-    a = torch.zeros(1, 512, 512, 3)
-    sig = signature(a)
-    assert same_input(sig, a)
-    b = a.clone()
-    b[:, 2:6, 2:6, :] = 1.0                          # petit changement entre deux echantillons
-    assert not same_input(sig, b)
-    assert not same_input(sig, a.clone())             # meme contenu, autre objet : on reecrit
-    del a
-    assert sig() is None                              # reference faible : rien n'est retenu
+    with torch.inference_mode():                      # comme dans ComfyUI : pas de compteur de version
+        a = torch.rand(3, 64, 96, 3)
+        sig = signature(a)
+        assert same_input(sig, a)
+        assert same_input(sig, a.clone())             # meme contenu, autre objet : reutilisable
+        b = a.clone()
+        b[1, 2, 3, 0] += 1e-6                         # un seul pixel d'une image change
+        assert not same_input(sig, b)
+        a[2, 10:12, 10:12, :] = 0.0                   # modification SUR PLACE du meme objet
+        assert not same_input(sig, a)
+        assert not same_input(sig, a[:2])             # longueur differente
+    assert signature(a.to(torch.bfloat16))[0] == "image"   # dtype sans equivalent numpy
+
+    class Other:                                      # video en memoire inconnue : meme objet
+        pass
+    o = Other()
+    so = signature(o)
+    assert same_input(so, o) and not same_input(so, Other())
+    del o
+    assert so[1]() is None                            # reference faible : rien n'est retenu

@@ -9,10 +9,10 @@ images pleine resolution sans perte. Widget : web/aioli_video_compare.js.
   + proxy JPEG) dans le temp de ComfyUI et lues par /view.
 - Le node s'execute a chaque run (not_idempotent) : son widget pointe toujours
   vers des images qui existent, quel que soit le cache de ComfyUI. Si ses
-  entrees sont les memes (meme objet transmis par ComfyUI, ou meme fichier
-  video inchange), il reutilise instantanement les images deja ecrites. Il garde ses KEEP_PER_NODE dernieres sessions (allers-
-  retours A / B entre reglages) ; au plus MAX_NODES nodes ; le temp est vide
-  par ComfyUI a chaque demarrage.
+  entrees ont le meme contenu (empreinte exacte des images, ou meme fichier
+  video inchange), il reutilise les images deja ecrites. Il garde ses
+  KEEP_PER_NODE dernieres sessions (allers-retours A / B entre reglages) ; au
+  plus MAX_NODES nodes ; le temp est vide par ComfyUI a chaque demarrage.
 - Geometrie d'affichage : la plus grande des deux ; l'autre clip est agrandi a
   l'affichage (ses pixels ne sont pas modifies), et c'est signale.
 - Un fps par clip (IMAGE : fps_a / fps_b ; VIDEO : son propre fps). Le plus
@@ -44,12 +44,12 @@ def _fps_input(key, label):
                           tooltip="Frame rate when this side is an IMAGE batch (a VIDEO keeps its own).")
 
 
-def _find(uid, a, b):
+def _find(uid, a, b, sig_a, sig_b):
     """Session existante de ce node pour ces memes entrees (dossier encore present)."""
     with _LOCK:
         sessions = list(_NODES.get(uid, []))
     for sess in sessions:
-        if (same_input(sess["sig"][0], a) and same_input(sess["sig"][1], b)
+        if (same_input(sess["sig"][0], a, sig_a) and same_input(sess["sig"][1], b, sig_b)
                 and os.path.isdir(sess["folder"])):
             return sess
     return None
@@ -94,7 +94,8 @@ class AioliVideoCompare(io.ComfyNode):
     @classmethod
     def execute(cls, a, b, fps_a, fps_b, label_a, label_b) -> io.NodeOutput:
         uid = str(cls.hidden.unique_id) if cls.hidden and cls.hidden.unique_id else "?"
-        sess = _find(uid, a, b)
+        sig_a, sig_b = signature(a), signature(b)
+        sess = _find(uid, a, b, sig_a, sig_b)
         reused = sess is not None
         if not reused:
             sid = uuid.uuid4().hex[:12]
@@ -108,7 +109,7 @@ class AioliVideoCompare(io.ComfyNode):
             except Exception:
                 shutil.rmtree(folder, ignore_errors=True)
                 raise
-            sess = dict(sid=sid, folder=folder, sig=(signature(a), signature(b)), clips=clips,
+            sess = dict(sid=sid, folder=folder, sig=(sig_a, sig_b), clips=clips,
                         is_image={"a": isinstance(a, torch.Tensor), "b": isinstance(b, torch.Tensor)})
         _remember(uid, sess)
 
