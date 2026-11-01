@@ -31,7 +31,7 @@ NODE_CLASS_MAPPINGS = {
 
 NODE_DISPLAY_NAME_MAPPINGS = {
     "RatioOutpaintCalc":        "🖼️ Ratio Outpaint Calc",
-    "AioliMaskBBoxV2":          "📐 Aioli Mask BBox V2",
+    "AioliMaskBBoxV2":          "📐 Aioli Mask BBox",
     "InpaintColorFix":          "🎨 Inpaint Color Fix",
     "BBoxMultipleAssembler":    "🧩 BBox Multiple Assembler",
     "RegionalMaskConditioning": "🗺️ Regional Mask Conditioning",
@@ -44,4 +44,23 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "BBoxMultipleFix":          "📐 BBox Multiple Fix (legacy)",
 }
 
-__all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS"]
+# v1.8 : panneau Resolution (API V3, widget JS dans web/). Si l'API V3 ou le
+# serveur ne sont pas disponibles (ComfyUI ancien), le reste du pack charge.
+WEB_DIRECTORY = "./web"
+try:
+    from .nodes.resolution_panel import AioliResolutionPanel
+    from .nodes import resolution_routes  # noqa: F401  (route /aioli/resolution_plan)
+    NODE_CLASS_MAPPINGS["AioliResolutionPanel"] = AioliResolutionPanel
+    NODE_DISPLAY_NAME_MAPPINGS["AioliResolutionPanel"] = "📏 Aioli Resolution Panel"
+except Exception as e:  # pragma: no cover
+    print(f"[aioli-nodes] Resolution Panel indisponible : {e}")
+
+# v1.8 : comparateur video A / B (API V3, widget JS dans web/).
+try:
+    from .nodes.video_compare import AioliVideoCompare
+    NODE_CLASS_MAPPINGS["AioliVideoCompare"] = AioliVideoCompare
+    NODE_DISPLAY_NAME_MAPPINGS["AioliVideoCompare"] = "🎞️ Aioli Video Compare"
+except Exception as e:  # pragma: no cover
+    print(f"[aioli-nodes] Video Compare indisponible : {e}")
+
+__all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS", "WEB_DIRECTORY"]

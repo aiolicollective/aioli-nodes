@@ -80,8 +80,8 @@ class BBoxMultipleFix:
         if c["need_resize"]:
             up_w, up_h = c["resize_to"]
             print(f"[{LOG}] {c['resize_label']} : {nw}x{nh} -> {up_w}x{up_h}")
-            img_cropped = resize_lanczos(img_cropped, up_w, up_h, "image")
-            mask_cropped = resize_lanczos(mask_cropped, up_w, up_h, "mask")
+            img_cropped = resize_lanczos(img_cropped, up_w, up_h, "image", rounding="floor")
+            mask_cropped = resize_lanczos(mask_cropped, up_w, up_h, "mask", rounding="floor")
 
         return (img_cropped, mask_cropped,
                 c["x"], c["y"],

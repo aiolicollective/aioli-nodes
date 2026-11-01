@@ -1,6 +1,8 @@
 import torch
 import numpy as np
 
+from .log import log
+
 try:
     from scipy import ndimage as _ndi          # deja livre avec ComfyUI
     _HAS_SCIPY = True
@@ -90,9 +92,9 @@ class MaskSplitRegions:
 
         if not binary.any():
             if empty_mask == "full_image":
-                print("[MaskSplitRegions] masque vide -> 1 region = image entiere (empty_mask=full_image)")
+                log("[MaskSplitRegions] masque vide -> 1 region = image entiere (empty_mask=full_image)")
                 return ([torch.ones((H, W), dtype=torch.float32)], 1)
-            print("[MaskSplitRegions] masque vide -> 1 region (zeros)")
+            log("[MaskSplitRegions] masque vide -> 1 region (zeros)")
             return ([torch.zeros((H, W), dtype=torch.float32)], 0)
 
         # zone de labelling (eventuellement fusionnee)
@@ -105,7 +107,7 @@ class MaskSplitRegions:
                 structure = np.array([[0, 1, 0], [1, 1, 1], [0, 1, 0]], dtype=np.int32)
             labels, n = _ndi.label(lab_input, structure=structure)
         else:
-            print("[MaskSplitRegions] scipy introuvable -> masque non decoupe (1 region)")
+            log("[MaskSplitRegions] scipy introuvable -> masque non decoupe (1 region)")
             return ([soft], 1)
 
         # construit un masque doux par composante (garde les valeurs dessinees)
@@ -120,7 +122,7 @@ class MaskSplitRegions:
             regions.append((reg, area, comp))
 
         if not regions:
-            print(f"[MaskSplitRegions] {n} taches mais toutes < min_area -> 1 region (union)")
+            log(f"[MaskSplitRegions] {n} taches mais toutes < min_area -> 1 region (union)")
             return ([soft], 1)
 
         # tri / hierarchie
@@ -137,6 +139,6 @@ class MaskSplitRegions:
             regions.sort(key=lambda r: topmost(r[2])[1])
 
         out = [torch.from_numpy(r[0]).float() for r in regions]
-        print(f"[MaskSplitRegions] {n} taches detectees -> {len(out)} regions "
+        log(f"[MaskSplitRegions] {n} taches detectees -> {len(out)} regions "
               f"(min_area={min_area}, merge={merge_distance}, conn={connectivity})")
         return (out, len(out))

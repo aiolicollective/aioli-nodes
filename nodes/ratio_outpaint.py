@@ -1,6 +1,7 @@
 import math
 import torch
 
+from .log import log
 from .tensor_utils import resize_lanczos
 
 
@@ -25,6 +26,39 @@ def round_up_8(n):
 def snap_to_mult(n, mult):
     """Arrondi au multiple le plus proche (minimise l'ecart de ratio)."""
     return max(mult, round(n / mult) * mult)
+
+
+def outpaint_layout(W, H, ratio, multiple):
+    """
+    Taille apres outpaint et pads (fonction pure, partagee avec le panneau
+    Resolution). None si pas de padding (ratio none ou deja au ratio).
+    Sinon (new_W, new_H, gauche, droite, haut, bas, libelle). Un pad negatif
+    (arrondi au multiple sous la taille source) rogne l'image.
+    """
+    if ratio == "none":
+        return None
+    rw, rh = RATIOS[ratio]
+    if W * rh == H * rw:
+        return None
+    if multiple == "none":
+        # Comportement legacy : ceil x8 sur la dimension calculee uniquement
+        if W * rh < H * rw:
+            new_W, new_H = round_up_8(math.ceil(H * rw / rh)), H
+        else:
+            new_W, new_H = W, round_up_8(math.ceil(W * rh / rw))
+        mult_label = "legacy x8-ceil"
+    else:
+        mult = int(multiple.split(" ")[0])
+        if W * rh < H * rw:
+            # Image trop etroite : elargir W
+            new_W, new_H = snap_to_mult(H * rw / rh, mult), snap_to_mult(H, mult)
+        else:
+            # Image trop courte : elargir H
+            new_W, new_H = snap_to_mult(W, mult), snap_to_mult(W * rh / rw, mult)
+        mult_label = f"x{mult}-round"
+    pad_left = (new_W - W) // 2
+    pad_top = (new_H - H) // 2
+    return (new_W, new_H, pad_left, (new_W - W) - pad_left, pad_top, (new_H - H) - pad_top, mult_label)
 
 
 class RatioOutpaintCalc:
@@ -80,7 +114,7 @@ class RatioOutpaintCalc:
         if m.dim() == 2:
             m = m.unsqueeze(0)
         if m.shape[1] != H or m.shape[2] != W:
-            print(f"[RatioOutpaintCalc] mask {m.shape[2]}x{m.shape[1]} != image {W}x{H} "
+            log(f"[RatioOutpaintCalc] mask {m.shape[2]}x{m.shape[1]} != image {W}x{H} "
                   f"-> mask redimensionne sur l'image")
             m = resize_lanczos(m, W, H, "mask")
         return m
@@ -89,50 +123,16 @@ class RatioOutpaintCalc:
         B, H, W, C = image.shape
         in_mask = self._input_mask(mask, B, H, W)
 
-        # Mode ratio=none : pass-through, aucun padding
-        if ratio == "none":
-            print(f"[RatioOutpaintCalc] {W}x{H} | ratio=none, pass-through")
+        lay = outpaint_layout(W, H, ratio, multiple)
+        if lay is None:
+            if ratio == "none":
+                print(f"[RatioOutpaintCalc] {W}x{H} | ratio=none, pass-through")
+            else:
+                print(f"[RatioOutpaintCalc] {W}x{H} deja au ratio {ratio}")
             mask = torch.zeros((B, H, W), dtype=torch.float32)
             return (image, mask, in_mask)
 
-        rw, rh = RATIOS[ratio]
-
-        # --- Calcul des nouvelles dimensions ---
-        if multiple == "none":
-            # Comportement legacy : ceil x8 sur la dimension calculee uniquement
-            if W * rh < H * rw:
-                new_W = round_up_8(math.ceil(H * rw / rh))
-                new_H = H
-            elif W * rh > H * rw:
-                new_W = W
-                new_H = round_up_8(math.ceil(W * rh / rw))
-            else:
-                print(f"[RatioOutpaintCalc] {W}x{H} deja au ratio {ratio}")
-                mask = torch.zeros((B, H, W), dtype=torch.float32)
-                return (image, mask, in_mask)
-            mult_label = "legacy x8-ceil"
-
-        else:
-            mult = int(multiple.split(" ")[0])
-            if W * rh < H * rw:
-                # Image trop etroite : elargir W
-                new_W = snap_to_mult(H * rw / rh, mult)
-                new_H = snap_to_mult(H, mult)
-            elif W * rh > H * rw:
-                # Image trop courte : elargir H
-                new_W = snap_to_mult(W, mult)
-                new_H = snap_to_mult(W * rh / rw, mult)
-            else:
-                print(f"[RatioOutpaintCalc] {W}x{H} deja au ratio {ratio}")
-                mask = torch.zeros((B, H, W), dtype=torch.float32)
-                return (image, mask, in_mask)
-            mult_label = f"x{mult}-round"
-
-        pad_left   = (new_W - W) // 2
-        pad_right  = (new_W - W) - pad_left
-        pad_top    = (new_H - H) // 2
-        pad_bottom = (new_H - H) - pad_top
-
+        new_W, new_H, pad_left, pad_right, pad_top, pad_bottom, mult_label = lay
         print(f"[RatioOutpaintCalc] {W}x{H} -> {new_W}x{new_H} | {ratio} | {mult_label} | L={pad_left} R={pad_right} T={pad_top} B={pad_bottom}")
 
         img = image.permute(0, 3, 1, 2)

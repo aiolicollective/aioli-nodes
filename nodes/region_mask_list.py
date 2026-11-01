@@ -1,5 +1,7 @@
 import torch
 
+from .log import log
+
 
 class RegionMaskList:
     """
@@ -25,7 +27,7 @@ class RegionMaskList:
                    retires ; s'il ne reste aucune region, la liste devient UN
                    masque plein : pas de masque = toute l'image est editee.
 
-    Cette meme liste alimente : AioliMaskBBox V2 (bbox + crop + coords par region),
+    Cette meme liste alimente : Aioli Mask BBox (bbox + crop + coords par region),
     Gemma (caption par region), le KSampler (N passes) ET le conditionnement
     regional mode B. Le fond y est donc lui aussi captionne et enhance.
 
@@ -93,7 +95,7 @@ class RegionMaskList:
         if not flat:
             if empty == "full_image" and ref is not None:
                 full = torch.ones_like(ref)
-                print(f"[RegionMaskList] aucune region ({n_in} masques, {n_extra} extra, vides) "
+                log(f"[RegionMaskList] aucune region ({n_in} masques, {n_extra} extra, vides) "
                       f"-> 1 region = image entiere (empty=full_image)")
                 return ([full], torch.zeros_like(ref).unsqueeze(0), 1)
             empty_m = torch.zeros((1, 1), dtype=torch.float32) if ref is None else torch.zeros_like(ref)
@@ -115,6 +117,6 @@ class RegionMaskList:
             out.append(bg)
 
         extra_info = f" (dont {len(extras)} extra)" if extras else ""
-        print(f"[RegionMaskList] {len(flat)} masques{extra_info}"
+        log(f"[RegionMaskList] {len(flat)} masques{extra_info}"
               f"{' + fond (inverse union)' if len(out) > len(flat) else ''} -> {len(out)} calques")
         return (out, bg.unsqueeze(0), len(out))

@@ -3,6 +3,8 @@ import torch.nn.functional as F
 import numpy as np
 from PIL import Image
 
+from .tensor_utils import to_uint8
+
 _PALETTE = [
     (1.0, 0.2, 0.2), (0.2, 0.8, 1.0), (0.4, 1.0, 0.3), (1.0, 0.85, 0.1),
     (0.9, 0.3, 1.0), (1.0, 0.55, 0.0), (0.2, 1.0, 0.8), (1.0, 0.4, 0.7),
@@ -10,15 +12,28 @@ _PALETTE = [
 
 
 def _resize_img(hwc, new_w, new_h):
-    arr = (hwc.cpu().numpy() * 255).clip(0, 255).astype(np.uint8)
+    arr = to_uint8(hwc.cpu().numpy())
     pil = Image.fromarray(arr).resize((new_w, new_h), Image.LANCZOS)
     return torch.from_numpy(np.array(pil).astype(np.float32) / 255.0)
 
 
 def _resize_mask(hw, new_w, new_h):
-    arr = (hw.cpu().numpy() * 255).clip(0, 255).astype(np.uint8)
+    arr = to_uint8(hw.cpu().numpy())
     pil = Image.fromarray(arr, mode='L').resize((new_w, new_h), Image.LANCZOS)
     return torch.from_numpy(np.array(pil).astype(np.float32) / 255.0)
+
+
+def _replicate_outside(t, x0, y0, x1, y1):
+    """
+    Remplace tout ce qui est hors du rectangle [x0, x1) x [y0, y1) par le bord
+    du rectangle (replicate). t : (H, W) ou (H, W, C).
+    """
+    H, W = t.shape[0], t.shape[1]
+    if x0 <= 0 and y0 <= 0 and x1 >= W and y1 >= H:
+        return t
+    rows = torch.arange(H).clamp(y0, y1 - 1)
+    cols = torch.arange(W).clamp(x0, x1 - 1)
+    return t[rows][:, cols]
 
 
 def _sep_maxpool(m, px):
@@ -86,6 +101,78 @@ def _feather_fast(mask_hw, px):
     return m.squeeze(0).squeeze(0).clamp(0.0, 1.0)
 
 
+def _feather_split(mask_adjust, feather):
+    """
+    Fondu VERS L'EXTERIEUR (v1.8) : le masque (apres mask_adjust) est grossi de
+    ceil(f/2) puis adouci d'un flou boite de rayon f // 2. Resultat : alpha = 1
+    partout dans le masque, fondu dehors, 0 au-dela de mask_adjust + f.
+    Avec mask_adjust = -f, rien ne sort du trait dessine (f pair ou impair).
+    Avant v1.8 : fondu centre sur le bord (moitie dedans, ~50 % au bord).
+    Renvoie (grow, rayon du flou).
+    """
+    f = int(feather)
+    return int(mask_adjust) + (f + 1) // 2, f // 2
+
+
+def alpha_from_mask(mask_hw, mask_adjust, feather):
+    """
+    Alpha d'un calque (sans l'opacite). Partage avec Region Preview.
+
+    Au-dela de 24 px de rayon, grow / flou passent par un chemin sous-echantillonne
+    (rapide mais approche) : on y impose explicitement les deux bornes de la regle,
+    1 dans le masque apres mask_adjust, 0 au-dela de mask_adjust + feather.
+    """
+    grow, r = _feather_split(mask_adjust, feather)
+    alpha = _feather_fast(_grow_shrink_fast(mask_hw, grow), r)
+    if abs(grow) > _EXACT_RADIUS or r > _EXACT_RADIUS:
+        # bornes exactes (noyau carre, comme le grow) : au moins le masque apres
+        # mask_adjust (opacite du masque gardee), 0 au-dela de mask_adjust +
+        # feather du masque (> 0)
+        m = mask_hw.detach().cpu().float().numpy()
+        inner = torch.from_numpy(_square_grow(m, int(mask_adjust))).to(alpha.device)
+        outer = torch.from_numpy(_cheb_band(m > 0, int(mask_adjust) + int(feather))).to(alpha.device)
+        alpha = torch.maximum(alpha, inner)          # masque apres mask_adjust, opacite comprise
+        alpha = torch.where(outer, alpha, torch.zeros_like(alpha))
+    return alpha
+
+
+def _square_grow(m, k):
+    """
+    Grow (k > 0) / shrink (k < 0) exact d'un masque doux, noyau carre (comme le
+    max-pool du grow), bord de l'image prolonge. Filtres 1D separables (scipy),
+    cout independant de k.
+    """
+    from scipy import ndimage
+    if k == 0:
+        return m.copy()
+    size = 2 * abs(k) + 1
+    if k > 0:
+        return ndimage.maximum_filter(m, size=size, mode="nearest")
+    return ndimage.minimum_filter(m, size=size, mode="nearest")
+
+
+def _cheb_band(mask_bool, k):
+    """
+    Pixels a distance de Chebyshev <= k du masque (k >= 0), ou interieur du
+    masque erode de -k (k < 0). Le bord de l'image ne compte pas comme du vide
+    (comme le padding replicate du feather).
+    """
+    from scipy import ndimage
+    if not mask_bool.any():
+        return mask_bool.copy()
+    if k >= 0:
+        if mask_bool.all():
+            return mask_bool.copy()
+        return ndimage.distance_transform_cdt(~mask_bool, metric="chessboard") <= k
+    if mask_bool.all():
+        return mask_bool.copy()
+    return ndimage.distance_transform_cdt(mask_bool, metric="chessboard") > -k
+
+
+# Rayon max du chemin plein resolution de _grow_shrink_fast / _feather_fast.
+_EXACT_RADIUS = 24
+
+
 class BBoxMultipleAssembler:
     """
     Recompose pixel-perfect d'une LISTE de crops sur une seule image de base.
@@ -111,7 +198,29 @@ class BBoxMultipleAssembler:
 
     'checker' : contour colore de chaque zone pour verifier la superposition
     (toujours dessine ; non expose).
+
+    v1.8 :
+      * Batch : chaque image du batch est recomposee (avant : seule l'image 0,
+        sans avertissement). Un crop / masque de batch 1 sert a toutes les images.
+      * Base RGBA + crop RVB : l'alpha de la base est garde (avant : plantage
+        sur le checker, et l'alpha aurait recu le canal rouge).
+      * Bandes (crop qui deborde de l'image, x / y negatifs) : avant le resize
+        retour, le contenu des bandes est remplace par le bord de l'image (image
+        ET masque). Le gris des bandes ne deborde plus dans l'image (liseres) et
+        le masque reste plein jusqu'au bord. Sans bande : inchange.
+      * Arrondi au plus proche avant PIL (avant : troncature, -0,5 niveau).
+      * feather = fondu VERS L'EXTERIEUR du masque (apres mask_adjust) : le
+        masque reste a 100 % jusqu'a son bord, fondu sur ~feather px dehors.
+        Avant : fondu centre sur le bord (~50 % au bord du masque). Pour ne
+        rien toucher hors du trait dessine : mask_adjust = -feather.
+      * Grow / feather calcules sur le rectangle du crop elargi de la portee
+        (au lieu de toute la toile) : meme resultat au bit pres, bien plus
+        rapide. Au-dela de 24 px (chemin sous-echantillonne), toute la toile,
+        comme avant.
     """
+
+    _WINDOW_MAX_RADIUS = _EXACT_RADIUS
+    _use_window = True    # False : masque et checker sur toute la toile (reference des tests)
 
     INPUT_IS_LIST = True
 
@@ -130,7 +239,9 @@ class BBoxMultipleAssembler:
             "optional": {
                 "order":       (["list_first_on_top", "area_large_under"],),
                 "mask_adjust": ("INT",   {"default": 0,   "min": -512, "max": 512}),
-                "feather":     ("INT",   {"default": 8,   "min": 0, "max": 512}),
+                "feather":     ("INT",   {"default": 8,   "min": 0, "max": 512,
+                                          "tooltip": "Largeur du fondu (px), vers l'exterieur du masque "
+                                                     "(apres mask_adjust). Le masque reste a 100 % dedans."}),
                 "opacity":     ("FLOAT", {"default": 1.0, "min": 0.0, "max": 1.0, "step": 0.01}),
             },
         }
@@ -140,24 +251,61 @@ class BBoxMultipleAssembler:
     FUNCTION     = "assemble"
     CATEGORY     = "Aioli Nodes"
 
+    @classmethod
+    def _region_alpha(cls, m, x0, y0, x1, y1, cx0, cy0, H, W, mask_adjust, feather, opacity):
+        """
+        Alpha du calque : le masque (deja a la taille du crop) pose a sa place,
+        grossi / retreci puis adouci. Renvoie (alpha, ox, oy) : alpha couvre la
+        fenetre [oy:oy+h, ox:ox+w] de la toile, nulle ailleurs.
+
+        Fenetre = rectangle du crop dans l'image + portee (mask_adjust + feather
+        + 2), bornee par l'image. Au-dela de la portee, le calcul sur toute la
+        toile ne donne que des zeros : le resultat est identique au bit pres
+        (bord de l'image : meme padding ; bord interieur de la fenetre : zeros
+        des deux cotes). Teste dans tests/test_assembler.py.
+        """
+        r_max = cls._WINDOW_MAX_RADIUS
+        grow, r = _feather_split(mask_adjust, feather)
+        if cls._use_window and abs(grow) <= r_max and r <= r_max:
+            M = max(0, grow) + r + 2
+            ox, oy = max(0, x0 - M), max(0, y0 - M)
+            ex, ey = min(W, x1 + M), min(H, y1 + M)
+        else:
+            ox, oy, ex, ey = 0, 0, W, H
+        full_mask = torch.zeros((ey - oy, ex - ox), dtype=torch.float32)
+        full_mask[y0 - oy:y1 - oy, x0 - ox:x1 - ox] = m[cy0:cy0 + (y1 - y0), cx0:cx0 + (x1 - x0)]
+        alpha = alpha_from_mask(full_mask, mask_adjust, feather) * opacity
+        return alpha, ox, oy
+
     def assemble(self, base_image, crops, masks, x, y, width, height,
                  order=None, mask_adjust=None, feather=None, opacity=None):
 
-        base = base_image[0]
-        if base.dim() == 4:
-            base = base[0]
-        base = base.clone().float()
-        H, W, C = base.shape
+        base_b = base_image[0]
+        if base_b.dim() == 3:
+            base_b = base_b.unsqueeze(0)
+        base_b = base_b.float()
+        Bb, H, W, C = base_b.shape
 
         order         = (order or ["list_first_on_top"])[0]
         mask_adjust   = int((mask_adjust or [0])[0])
         feather       = int((feather or [8])[0])
         opacity       = float((opacity or [1.0])[0])
-        debug_outline = True  # fige : le checker est toujours annote (sinon == image)
 
         n = min(len(crops), len(masks), len(x), len(y), len(width), len(height))
-        canvas   = base.clone()
-        combined = torch.zeros((H, W), dtype=torch.float32)
+
+        def as_batch(t, dims):
+            t = t.float()
+            return t.unsqueeze(0) if t.dim() == dims else t
+
+        crop_b = [as_batch(crops[i], 3) for i in range(n)]
+        mask_b = [as_batch(masks[i], 2) for i in range(n)]
+        sizes = [Bb] + [c.shape[0] for c in crop_b] + [m.shape[0] for m in mask_b]
+        B = max(sizes)
+        if B > 1:
+            print(f"[BBoxMultipleAssembler] batch {B}")
+            if any(s not in (1, B) for s in sizes):
+                print(f"[BBoxMultipleAssembler] WARNING : batchs incoherents {sorted(set(sizes))} "
+                      f"-> le dernier element est repete jusqu'a {B}")
 
         idx = list(range(n))
         if order == "area_large_under":
@@ -165,28 +313,11 @@ class BBoxMultipleAssembler:
         else:  # list_first_on_top -> on peint du dernier au premier
             idx = list(reversed(idx))
 
-        outlines = []
+        # Par calque : geometrie, puis alpha (une fois par masque distinct).
+        layers = []
         for i in idx:
             wi, hi = int(width[i]), int(height[i])
-            xi, yi = int(x[i]),     int(y[i])
-
-            crop = crops[i]
-            if crop.dim() == 4:
-                crop = crop[0]
-            crop = crop.float()
-            if crop.shape[2] != C:
-                crop = crop[..., :C] if crop.shape[2] > C else crop.repeat(1, 1, C)[..., :C]
-
-            m = masks[i]
-            if m.dim() == 3:
-                m = m[0]
-            m = m.float()
-
-            if crop.shape[0] != hi or crop.shape[1] != wi:
-                crop = _resize_img(crop, wi, hi)
-            if m.shape[0] != hi or m.shape[1] != wi:
-                m = _resize_mask(m, wi, hi)
-
+            xi, yi = int(x[i]), int(y[i])
             # rectangle du crop reellement present dans l'image (= la seule zone
             # ou ce calque possede des pixels enhances)
             x0, y0 = max(xi, 0), max(yi, 0)
@@ -195,40 +326,96 @@ class BBoxMultipleAssembler:
                 continue
             cx0, cy0 = x0 - xi, y0 - yi
             cx1, cy1 = cx0 + (x1 - x0), cy0 + (y1 - y0)
+            alphas = {}
+            for bm in range(mask_b[i].shape[0]):
+                m = mask_b[i][bm]
+                if m.shape[0] != hi or m.shape[1] != wi:
+                    m = self._prepare(m, wi, hi, cx0, cy0, cx1, cy1, _resize_mask)
+                alphas[bm] = self._region_alpha(m, x0, y0, x1, y1, cx0, cy0, H, W,
+                                                mask_adjust, feather, opacity)
+            layers.append((i, wi, hi, x0, y0, x1, y1, cx0, cy0, cx1, cy1, alphas))
 
-            # 1) masque pose sur PLEINE TOILE (noir hors crop), grossi/retreci
-            #    -> borne par l'IMAGE, jamais clip au bord du crop (fini le "bug")
-            full_mask = torch.zeros((H, W), dtype=torch.float32)
-            full_mask[y0:y1, x0:x1] = m[cy0:cy1, cx0:cx1]
-            full_mask = _grow_shrink_fast(full_mask, mask_adjust)
-            alpha_full = _feather_fast(full_mask, feather) * opacity
+        prepared = {}
 
-            # 2) COMPOSITE UNIQUEMENT dans le rectangle du crop.
-            #    Hors du crop : on n'ecrit rien -> le calque DESSOUS (hierarchie)
-            #    reste visible = "transparence". Pas de pixels de base imposes.
-            a   = alpha_full[y0:y1, x0:x1].unsqueeze(-1)
-            src = crop[cy0:cy1, cx0:cx1, :]
-            dst = canvas[y0:y1, x0:x1, :]
-            canvas[y0:y1, x0:x1, :] = src * a + dst * (1.0 - a)
-            combined[y0:y1, x0:x1] = torch.maximum(combined[y0:y1, x0:x1],
-                                                   alpha_full[y0:y1, x0:x1])
+        def crop_for(i, cb, wi, hi, cx0, cy0, cx1, cy1):
+            """Crop i, element cb du batch, a la taille du crop (une fois par (i, cb))."""
+            key = (i, cb)
+            if key not in prepared:
+                crop = crop_b[i][cb]
+                cc = crop.shape[2]
+                if cc > C:
+                    crop = crop[..., :C]
+                elif cc == 1 and C > 1:
+                    crop = crop.repeat(1, 1, min(C, 3))
+                if crop.shape[0] != hi or crop.shape[1] != wi:
+                    crop = self._prepare(crop, wi, hi, cx0, cy0, cx1, cy1, _resize_img)
+                prepared[key] = crop
+            return prepared[key]
 
-            if debug_outline:
-                outlines.append((alpha_full, x0, y0, x1, y1, i))
+        out_img, out_comb, out_check = [], [], []
+        for b in range(B):
+            canvas = base_b[min(b, Bb - 1)].clone()
+            combined = torch.zeros((H, W), dtype=torch.float32)
+            outlines = []
+            for (i, wi, hi, x0, y0, x1, y1, cx0, cy0, cx1, cy1, alphas) in layers:
+                crop = crop_for(i, min(b, crop_b[i].shape[0] - 1), wi, hi, cx0, cy0, cx1, cy1)
+                alpha, ox, oy = alphas[min(b, len(alphas) - 1)]
 
-        if debug_outline:
+                # COMPOSITE UNIQUEMENT dans le rectangle du crop.
+                #   Hors du crop : on n'ecrit rien -> le calque DESSOUS (hierarchie)
+                #   reste visible = "transparence". Pas de pixels de base imposes.
+                a   = alpha[y0 - oy:y1 - oy, x0 - ox:x1 - ox]
+                src = crop[cy0:cy1, cx0:cx1, :]
+                dst = canvas[y0:y1, x0:x1, :]
+                if src.shape[2] < C:
+                    # ex. crop RVB (VAE Decode) sur base RGBA : les canaux absents
+                    # (l'alpha) restent ceux de la base. Avant : alpha = rouge.
+                    src = torch.cat([src, dst[..., src.shape[2]:]], dim=-1)
+                canvas[y0:y1, x0:x1, :] = src * a.unsqueeze(-1) + dst * (1.0 - a.unsqueeze(-1))
+                combined[y0:y1, x0:x1] = torch.maximum(combined[y0:y1, x0:x1], a)
+                outlines.append((a, x0, y0, x1, y1, i))
+
+            # 'checker' : contour colore de chaque zone (toujours dessine)
             checker = canvas.clone()
-            for (af, x0, y0, x1, y1, i) in outlines:
-                m_rect = torch.zeros_like(af)
-                m_rect[y0:y1, x0:x1] = (af[y0:y1, x0:x1] > 0.5).float()
+            for (a, x0, y0, x1, y1, i) in outlines:
+                g = 3   # grow 2 px du contour + 1
+                if self._use_window:
+                    gx0, gy0 = max(0, x0 - g), max(0, y0 - g)
+                    gx1, gy1 = min(W, x1 + g), min(H, y1 + g)
+                else:
+                    gx0, gy0, gx1, gy1 = 0, 0, W, H
+                m_rect = torch.zeros((gy1 - gy0, gx1 - gx0), dtype=torch.float32)
+                m_rect[y0 - gy0:y1 - gy0, x0 - gx0:x1 - gx0] = (a > 0.5).float()
                 edge = (_grow_shrink_fast(m_rect, 2) - m_rect).clamp(0, 1).unsqueeze(-1)
                 col  = torch.tensor(_PALETTE[i % len(_PALETTE)], dtype=torch.float32)
-                checker = checker * (1.0 - edge) + col * edge
-        else:
-            checker = canvas
+                if C != 3:
+                    col = torch.cat([col, torch.ones(max(0, C - 3))])[:C]
+                win = checker[gy0:gy1, gx0:gx1, :]
+                checker[gy0:gy1, gx0:gx1, :] = win * (1.0 - edge) + col * edge
+
+            out_img.append(canvas.clamp(0.0, 1.0))
+            out_comb.append(combined)
+            out_check.append(checker.clamp(0.0, 1.0))
 
         print(f"[BBoxMultipleAssembler] {n} calques, order={order}, mask_adjust={mask_adjust} "
-              f"(pleine toile), feather={feather} -> {W}x{H}")
-        return (canvas.clamp(0.0, 1.0).unsqueeze(0),
-                combined.unsqueeze(0),
-                checker.clamp(0.0, 1.0).unsqueeze(0))
+              f"(borne par l'image), feather={feather} -> {W}x{H}")
+        return (torch.stack(out_img), torch.stack(out_comb), torch.stack(out_check))
+
+    @staticmethod
+    def _prepare(t, wi, hi, cx0, cy0, cx1, cy1, resize):
+        """
+        Remet un crop / masque de la taille modele a la taille du crop (wi x hi).
+        S'il deborde de l'image (bandes), le contenu des bandes est d'abord
+        remplace par le bord de l'image, a l'echelle modele : le resize ne
+        melange plus le gris (ou ce que le modele y a peint) aux pixels de bord.
+        Les bandes ne sont jamais recollees (hors de l'image de base).
+        """
+        h, w = t.shape[0], t.shape[1]
+        if cx0 > 0 or cy0 > 0 or cx1 < wi or cy1 < hi:
+            sx, sy = w / wi, h / hi
+            mx0, mx1 = int(round(cx0 * sx)), int(round(cx1 * sx))
+            my0, my1 = int(round(cy0 * sy)), int(round(cy1 * sy))
+            mx0, my0 = min(max(mx0, 0), w - 1), min(max(my0, 0), h - 1)
+            mx1, my1 = max(min(mx1, w), mx0 + 1), max(min(my1, h), my0 + 1)
+            t = _replicate_outside(t, mx0, my0, mx1, my1)
+        return resize(t, wi, hi)

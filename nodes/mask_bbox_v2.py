@@ -4,12 +4,41 @@ import torch
 
 from .bbox_core_v2 import (MAX_RESOLUTION, MULTIPLES,
                            compute_crop_v2)
+from .log import log
 from .tensor_utils import resize_lanczos
 
 
 LOG = "AioliMaskBBoxV2"
 
 CONTEXTS = ["region", "full_image"]
+
+
+def _crop_replicate(t, x, y, cw, ch):
+    """
+    Preleve le rectangle (x, y, cw, ch) dans t ; hors image, le bord de l'image
+    est prolonge (replicate). Sert au resize : aucun gris ne se melange aux
+    pixels de bord. t : (B, H, W, C) ou (B, H, W).
+    """
+    H, W = t.shape[1], t.shape[2]
+    rows = (torch.arange(ch) + y).clamp(0, H - 1)
+    cols = (torch.arange(cw) + x).clamp(0, W - 1)
+    return t[:, rows][:, :, cols]
+
+
+def _paint_bands(t, x0, y0, x1, y1, fill):
+    """Peint `fill` hors de [x0, x1) x [y0, y1) (bandes, a la taille modele)."""
+    t = t.clone()
+    t[:, :y0] = fill
+    t[:, y1:] = fill
+    t[:, :, :x0] = fill
+    t[:, :, x1:] = fill
+    if t.dim() == 4 and t.shape[3] == 4:
+        a = t[..., 3]
+        a[:, :y0] = 1.0
+        a[:, y1:] = 1.0
+        a[:, :, :x0] = 1.0
+        a[:, :, x1:] = 1.0
+    return t
 
 
 def _crop_with_bands(t, x, y, cw, ch, fill):
@@ -30,6 +59,39 @@ def _crop_with_bands(t, x, y, cw, ch, fill):
     if sx1 > sx0 and sy1 > sy0:
         out[:, sy0 - y:sy1 - y, sx0 - x:sx1 - x] = t[:, sy0:sy1, sx0:sx1]
     return out
+
+
+def tight_bbox(mask):
+    """Bbox serre (x0, x1, y0, y1) de mask > 0, tous batchs confondus ; None si vide."""
+    nz = torch.nonzero(mask > 0)
+    if nz.numel() == 0:
+        return None
+    y_idx, x_idx = nz[:, -2], nz[:, -1]
+    return int(x_idx.min()), int(x_idx.max()) + 1, int(y_idx.min()), int(y_idx.max()) + 1
+
+
+def pad_bbox(tight, padding, context, W_src, H_src):
+    """Bbox (x, y, width, height) : bbox serre + padding, borne par l'image.
+    full_image ou masque vide (tight None) -> image entiere."""
+    if context == "full_image":
+        return 0, 0, W_src, H_src
+    if tight is None:
+        log(f"[{LOG}] WARNING : mask vide -> bbox = image entiere")
+        return 0, 0, W_src, H_src
+    x0, x1, y0, y1 = tight
+    x1p, x2p = max(0, x0 - padding), min(W_src, x1 + padding)
+    y1p, y2p = max(0, y0 - padding), min(H_src, y1 + padding)
+    return x1p, y1p, x2p - x1p, y2p - y1p
+
+
+def mask_bbox(mask, padding, context):
+    """
+    Bbox (x, y, width, height) d'un MASK (B, H, W) deja a la taille de l'image,
+    padding compris. Partagee avec le panneau Resolution.
+    """
+    H_src, W_src = mask.shape[-2], mask.shape[-1]
+    tight = None if context == "full_image" else tight_bbox(mask)
+    return pad_bbox(tight, padding, context, W_src, H_src)
 
 
 class AioliMaskBBoxV2:
@@ -72,6 +134,11 @@ class AioliMaskBBoxV2:
     rentre dans l'image. S'il deborde de l'image, des BANDES completent : x / y
     negatifs, orig_width / orig_height = taille du crop bandes comprises. Le bbox
     n'est jamais coupe.
+
+    v1.8 : crop avec bandes ET resize -> le resize se fait avec le bord de
+    l'image prolonge, puis les bandes sont peintes nettes a la taille modele
+    (plus de gris melange aux pixels de bord). Sans bande ou sans resize :
+    inchange.
 
     Masque vide : bbox = image entiere, masque a 0 (avertissement). Pour editer
     toute l'image, utiliser Mask Split Regions en empty_mask = full_image.
@@ -139,20 +206,7 @@ class AioliMaskBBoxV2:
             mask = resize_lanczos(mask, W_src, H_src, "mask")
 
         # -- bbox -------------------------------------------------------------
-        if context == "full_image":
-            x, y, width, height = 0, 0, W_src, H_src
-        else:
-            nz = torch.nonzero(mask > 0)
-            if nz.numel() == 0:
-                print(f"[{LOG}] WARNING : mask vide -> bbox = image entiere")
-                x, y, width, height = 0, 0, W_src, H_src
-            else:
-                y_idx, x_idx = nz[:, 1], nz[:, 2]
-                x1 = max(0, int(x_idx.min()) - padding)
-                x2 = min(W_src, int(x_idx.max()) + 1 + padding)
-                y1 = max(0, int(y_idx.min()) - padding)
-                y2 = min(H_src, int(y_idx.max()) + 1 + padding)
-                x, y, width, height = x1, y1, x2 - x1, y2 - y1
+        x, y, width, height = mask_bbox(mask, padding, context)
 
         # -- geometrie ----------------------------------------------------------
         c = compute_crop_v2(x, y, width, height, W_src, H_src, multiple, resolution,
@@ -169,28 +223,38 @@ class AioliMaskBBoxV2:
             l, t, r, b = c["bands"]
             print(f"[{LOG}] bandes   : gauche {l}, haut {t}, droite {r}, bas {b} (px source)")
 
-        # -- crop (bandes comprises) -----------------------------------------------
+        # -- crop (bandes comprises) + resize Lanczos vers la taille modele ---------
         cx, cy = c["x"], c["y"]
         cw, ch = c["orig_width"], c["orig_height"]
-        img_cropped = _crop_with_bands(image, cx, cy, cw, ch, band_color)
-        mask_cropped = _crop_with_bands(mask, cx, cy, cw, ch, 0.0)
-
-        # -- resize Lanczos vers la taille modele ------------------------------------
         mw, mh = c["width"], c["height"]
-        if c["need_resize"]:
-            print(f"[{LOG}] {c['resize_label']} : {cw}x{ch} -> {mw}x{mh}")
-            img_cropped = resize_lanczos(img_cropped, mw, mh, "image")
-            mask_cropped = resize_lanczos(mask_cropped, mw, mh, "mask")
-        else:
-            print(f"[{LOG}] modele   : {mw}x{mh} (pas de resize)")
-
-        # -- image_area : 1 dans l'image, 0 dans les bandes (taille modele) -------
-        # Cote bande, on retire la frange ou le Lanczos a melange le gris a
-        # l'image (rayon 3 px, a l'echelle du resize) : zone de mesure propre.
         ix0, iy0, ix1, iy1 = c["image_rect"]
         sx, sy = mw / cw, mh / ch
+        # rectangle de l'image a la taille modele (bandes autour)
         ax0, ax1 = int(round(ix0 * sx)), int(round(ix1 * sx))
         ay0, ay1 = int(round(iy0 * sy)), int(round(iy1 * sy))
+        bands = any(c["bands"])
+        if c["need_resize"]:
+            print(f"[{LOG}] {c['resize_label']} : {cw}x{ch} -> {mw}x{mh}")
+            if bands:
+                # v1.8 : resize avec le bord de l'image prolonge, puis bandes
+                # peintes nettes a la taille modele. Avant, le gris des bandes
+                # entrait dans le Lanczos et debordait dans l'image (liseres),
+                # et le masque s'adoucissait au bord de l'image.
+                img_cropped = resize_lanczos(_crop_replicate(image, cx, cy, cw, ch), mw, mh, "image")
+                mask_cropped = resize_lanczos(_crop_replicate(mask, cx, cy, cw, ch), mw, mh, "mask")
+                img_cropped = _paint_bands(img_cropped, ax0, ay0, ax1, ay1, band_color)
+                mask_cropped = _paint_bands(mask_cropped, ax0, ay0, ax1, ay1, 0.0)
+            else:
+                img_cropped = resize_lanczos(_crop_with_bands(image, cx, cy, cw, ch, band_color), mw, mh, "image")
+                mask_cropped = resize_lanczos(_crop_with_bands(mask, cx, cy, cw, ch, 0.0), mw, mh, "mask")
+        else:
+            print(f"[{LOG}] modele   : {mw}x{mh} (pas de resize)")
+            img_cropped = _crop_with_bands(image, cx, cy, cw, ch, band_color)
+            mask_cropped = _crop_with_bands(mask, cx, cy, cw, ch, 0.0)
+
+        # -- image_area : 1 dans l'image, 0 dans les bandes (taille modele) -------
+        # Cote bande, on retire une frange (rayon Lanczos 3 px, a l'echelle du
+        # resize) : le modele voit la limite gris / image, zone de mesure propre.
         if c["need_resize"]:
             ex, ey = math.ceil(3 * max(1.0, sx)), math.ceil(3 * max(1.0, sy))
             bl, bt, br, bb = c["bands"]

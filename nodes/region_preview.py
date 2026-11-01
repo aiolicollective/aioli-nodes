@@ -1,6 +1,6 @@
 import torch
 
-from .bbox_assembler import _grow_shrink_fast, _feather_fast, _resize_mask, _PALETTE
+from .bbox_assembler import _grow_shrink_fast, _resize_mask, _PALETTE, alpha_from_mask
 
 
 class RegionPreview:
@@ -43,7 +43,9 @@ class RegionPreview:
             },
             "optional": {
                 "mask_adjust": ("INT",   {"default": 0,   "min": -512, "max": 512}),
-                "feather":     ("INT",   {"default": 8,   "min": 0,    "max": 512}),
+                "feather":     ("INT",   {"default": 8,   "min": 0,    "max": 512,
+                                          "tooltip": "Largeur du fondu (px), vers l'exterieur du masque "
+                                                     "(apres mask_adjust), comme l'assembler."}),
                 "opacity":     ("FLOAT", {"default": 1.0, "min": 0.0,  "max": 1.0, "step": 0.01}),
             },
         }
@@ -78,8 +80,7 @@ class RegionPreview:
             if m.shape[0] != H or m.shape[1] != W:
                 m = _resize_mask(m, W, H)
 
-            full_mask = _grow_shrink_fast(m, mask_adjust)
-            alpha = (_feather_fast(full_mask, feather) * opacity).clamp(0.0, 1.0)
+            alpha = (alpha_from_mask(m, mask_adjust, feather) * opacity).clamp(0.0, 1.0)
             combined = torch.maximum(combined, alpha)
             layers.append((alpha, i))
 
