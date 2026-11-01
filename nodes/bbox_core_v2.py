@@ -35,6 +35,8 @@ Regles (spec v1.7.0) :
 
 import math
 
+from .log import log
+
 
 MULTIPLES = ["8 (VAE minimum)", "16 (Flux)", "32 (SD1.5)", "64 (SDXL)"]
 
@@ -153,7 +155,7 @@ def compute_crop_v2(x, y, width, height, src_w, src_h, multiple, resolution,
         raise ValueError(f"[{log_prefix}] bbox vide : {bw}x{bh}")
 
     if N > WARN_RESOLUTION:
-        print(f"[{log_prefix}] WARNING : resolution {N} > {WARN_RESOLUTION} "
+        log(f"[{log_prefix}] WARNING : resolution {N} > {WARN_RESOLUTION} "
               f"({N * N / 1e6:.1f} MP au modele) -> VRAM et temps en hausse.")
 
     cap_area = max(CAP_SIDE * CAP_SIDE, N * N)

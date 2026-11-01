@@ -16,10 +16,7 @@ from comfy_api.latest import io
 
 from .bbox_core_v2 import MAX_RESOLUTION, MULTIPLES
 from .mask_bbox_v2 import CONTEXTS
-from .ratio_outpaint import RATIOS
-from .resolution_plan import plan, report
-
-RATIO_OPTIONS = ["none"] + list(RATIOS.keys())
+from .resolution_plan import RATIO_OPTIONS, plan, report
 
 
 class AioliResolutionPanel(io.ComfyNode):
@@ -55,14 +52,17 @@ class AioliResolutionPanel(io.ComfyNode):
             ],
             outputs=[
                 io.Float.Output("scale_out", display_name="SCALE"),
-                io.Combo.Output("ratio_out", display_name="OUTPAINT RATIO", options=RATIO_OPTIONS),
+                # Listes deroulantes en sortie : type "*" (AnyType). Le serveur
+                # refuse une sortie "COMBO" vers l'entree liste d'un node V1
+                # (comfy_execution/validation.py) ; "*" est accepte partout.
+                io.AnyType.Output("ratio_out", display_name="OUTPAINT RATIO"),
                 io.Boolean.Output("regenerate_all_out", display_name="REGENERATE WHOLE IMAGE"),
                 io.Int.Output("resolution_out", display_name="RESOLUTION"),
-                io.Combo.Output("multiple_out", display_name="multiple", options=MULTIPLES),
+                io.AnyType.Output("multiple_out", display_name="multiple"),
                 io.Boolean.Output("force_square_out", display_name="SQUARE"),
                 io.Boolean.Output("force_target_downscale_out", display_name="DOWNSCALE TO RESOLUTION"),
                 io.Int.Output("padding_out", display_name="padding"),
-                io.Combo.Output("context_out", display_name="CONTEXT", options=CONTEXTS),
+                io.AnyType.Output("context_out", display_name="CONTEXT"),
                 io.String.Output("report", display_name="report"),
             ],
         )

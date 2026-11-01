@@ -36,3 +36,41 @@ def test_plan_matches_chain(c):
         assert r["crop"] == [i["x"], i["y"], i["orig_width"], i["orig_height"]]
         assert r["model"] == [i["width"], i["height"]]
     assert report(p)
+
+
+def test_validate_settings_bounds():
+    from nodes.resolution_plan import validate_settings
+    ok = validate_settings({"scale": 1.5, "ratio": "16:9", "resolution": 1536, "multiple": "64 (SDXL)",
+                            "force_square": True, "force_target_downscale": False, "padding": 0,
+                            "context": "full_image", "regenerate_all": True})
+    assert ok["scale"] == 1.5 and ok["resolution"] == 1536
+    for bad in ({"scale": 0}, {"scale": 9}, {"scale": "abc"}, {"resolution": 10 ** 9},
+                {"padding": -1}, {"ratio": "2:1"}, {"multiple": "12"}, {"context": "x"},
+                {"force_square": "false"}, {"scale": True}):
+        with pytest.raises(ValueError):
+            validate_settings(bad)
+
+
+def test_quiet_is_per_thread():
+    """L'apercu fait taire les nodes sans toucher sys.stdout ni les autres threads."""
+    import io
+    import sys
+    import threading
+    from contextlib import redirect_stdout
+    from nodes.log import log, quiet
+    import torch
+    stdout = sys.stdout
+    m = torch.zeros(1, 300, 400)
+    m[:, 50:120, 60:200] = 1
+    threads = [threading.Thread(target=lambda: plan(400, 300, m, scale=1.5, ratio="16:9")) for _ in range(8)]
+    for t in threads:
+        t.start()
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        log("visible")
+        with quiet():
+            log("cache")
+    for t in threads:
+        t.join()
+    assert sys.stdout is stdout
+    assert buf.getvalue() == "visible\n"

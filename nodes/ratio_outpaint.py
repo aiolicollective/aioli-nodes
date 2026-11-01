@@ -1,6 +1,7 @@
 import math
 import torch
 
+from .log import log
 from .tensor_utils import resize_lanczos
 
 
@@ -113,7 +114,7 @@ class RatioOutpaintCalc:
         if m.dim() == 2:
             m = m.unsqueeze(0)
         if m.shape[1] != H or m.shape[2] != W:
-            print(f"[RatioOutpaintCalc] mask {m.shape[2]}x{m.shape[1]} != image {W}x{H} "
+            log(f"[RatioOutpaintCalc] mask {m.shape[2]}x{m.shape[1]} != image {W}x{H} "
                   f"-> mask redimensionne sur l'image")
             m = resize_lanczos(m, W, H, "mask")
         return m

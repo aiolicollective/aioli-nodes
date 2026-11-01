@@ -30,7 +30,26 @@ function inputSlot(node, name) {
 function originNode(node, name) {
   const slot = inputSlot(node, name);
   if (slot < 0 || !node.isInputConnected?.(slot)) return null;
-  return node.getInputNode?.(slot) ?? null;
+  let src = node.getInputNode?.(slot) ?? null;
+  // Reroute legacy : on remonte jusqu'au vrai node (les reroutes natifs sont
+  // deja transparents pour getInputNode).
+  for (let k = 0; src && src.type === "Reroute" && k < 32; k++) {
+    src = src.isInputConnected?.(0) ? src.getInputNode?.(0) ?? null : null;
+  }
+  return src;
+}
+
+// Reglages branches sur une entree (primitive, entree de subgraph...) : la
+// valeur n'est connue qu'au run, l'apercu utilise celle du widget.
+function linkedParams(node) {
+  return PARAMS.filter((p) => {
+    const slot = inputSlot(node, p);
+    return slot >= 0 && node.isInputConnected?.(slot);
+  });
+}
+
+function esc(t) {
+  return String(t).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
 }
 
 // Image source : un LoadImage (ou tout node avec un widget "image" = fichier).
@@ -113,8 +132,9 @@ function draw(state) {
   ctx.strokeRect(X(pl) + 0.5, Y(pt) + 0.5, sw * s - 1, sh * s - 1);
   ctx.fillStyle = "#8fb3d9";
   ctx.font = "11px sans-serif";
+  ctx.textAlign = "right";
+  ctx.fillText(`image ${size(plan.scaled)}`, X(pl) + sw * s - 4, Y(pt) + sh * s - 5);
   ctx.textAlign = "left";
-  ctx.fillText(`image ${size(plan.scaled)}`, X(pl) + 4, Y(pt) + 13);
 
   // Regions : crop (pointilles), bandes du crop hors canevas (hachures), bbox (trait plein).
   plan.regions.forEach((r, k) => {
@@ -146,7 +166,7 @@ function draw(state) {
   let chain = `source ${size(plan.source)}`;
   if (sw !== plan.source[0] || sh !== plan.source[1]) chain += ` → ×${st.scale} = ${size(plan.scaled)}`;
   if (PW !== sw || PH !== sh) chain += ` → ${st.ratio} = ${size(plan.padded)} (original ${Math.round(plan.coverage)} %)`;
-  const rows = [`<div class="aioli-rp-chain">${chain}</div>`];
+  const rows = [`<div class="aioli-rp-chain">${esc(chain)}</div>`];
   plan.regions.forEach((r, k) => {
     const col = PALETTE[k % PALETTE.length];
     const sc = r.model_scale;
@@ -154,10 +174,11 @@ function draw(state) {
       : sc >= 1 ? `↑ ×${sc.toFixed(2)}` : `↓ ×${sc.toFixed(2)} (1/${(1 / sc).toFixed(1)})`;
     const bands = r.band_pct ? ` · bandes ${Math.round(r.band_pct)} %` : "";
     rows.push(`<div><span class="aioli-rp-sw" style="background:${col}"></span>` +
-              `<b>R${r.index}</b> ${r.kind} · crop ${size(r.crop.slice(2))} → <b>${size(r.model)}</b>` +
+              `<b>R${r.index}</b> ${esc(r.kind)} · crop ${size(r.crop.slice(2))} → <b>${size(r.model)}</b>` +
               ` · ${rs}${bands} <span class="aioli-rp-dim">(bbox ${size(r.bbox.slice(2))})</span></div>`);
   });
-  for (const w of plan.warnings || []) rows.push(`<div class="aioli-rp-warn">⚠ ${w}</div>`);
+  for (const w of plan.warnings || []) rows.push(`<div class="aioli-rp-warn">⚠ ${esc(w)}</div>`);
+  for (const p of state.linked || []) rows.push(`<div class="aioli-rp-warn">⚠ ${esc(p)} est branché : aperçu avec la valeur du widget, valeur réelle au run</div>`);
   rows.push(`<div class="aioli-rp-origin">${plan.origin === "run" ? "valeurs du dernier run" : "aperçu avant run"}</div>`);
   text.innerHTML = rows.join("");
 }
@@ -197,12 +218,19 @@ function setup(node) {
     hideOnZoom: false,
     getMinHeight: () => DIAGRAM_H + 30 + root.querySelector(".aioli-rp-text").offsetHeight,
   });
+  widget.serialize = false;              // ni dans widgets_values du wf, ni dans le prompt
   widget.serializeValue = () => undefined;
 
   const redraw = () => draw(state);
-  new ResizeObserver(redraw).observe(root);
+  state.observer = new ResizeObserver(redraw);
+  state.observer.observe(root);
 
+  // Une seule requete a la fois : les changements pendant une requete sont
+  // regroupes et envoyes a son retour (pas d'empilement cote serveur).
   async function refresh(src, settings) {
+    if (state.inflight) { state.pending = true; return; }
+    state.inflight = true;
+    state.pending = false;
     const seq = ++state.seq;
     try {
       const resp = await api.fetchApi("/aioli/resolution_plan", {
@@ -211,26 +239,35 @@ function setup(node) {
         body: JSON.stringify({ image: src.name, use_mask: src.useMask, settings }),
       });
       const data = await resp.json();
-      if (seq !== state.seq) return;          // une reponse plus recente est partie
-      if (data.error) { state.plan = null; state.message = data.error; }
-      else { state.plan = data; }
+      if (seq === state.seq) {                // sinon : un run est passe entre-temps
+        if (data.error) { state.plan = null; state.message = data.error; }
+        else { state.plan = data; }
+      }
     } catch (e) {
-      if (seq !== state.seq) return;
-      state.plan = null;
-      state.message = `apercu indisponible (${e})`;
+      if (seq === state.seq) { state.plan = null; state.message = `aperçu indisponible (${e})`; }
+    }
+    finally {
+      state.inflight = false;
     }
     redraw();
     node.setDirtyCanvas?.(true, true);
+    if (state.pending) { state.sig = null; poll(); }
   }
 
   // Sondage des reglages : marche quel que soit le chemin du changement
   // (widget legacy, composant Vue, lien), sans dependre d'un hook du frontend.
-  function poll() {
+  function signature() {
     const settings = Object.fromEntries(PARAMS.map((p) => [p, widgetValue(node, p)]));
     const src = sourceImage(node);
-    const sig = JSON.stringify([settings, src]);
+    return { settings, src, sig: JSON.stringify([settings, src]) };
+  }
+  state.signature = signature;
+
+  function poll() {
+    const { settings, src, sig } = signature();
     if (sig === state.sig) return;
     state.sig = sig;
+    state.linked = linkedParams(node);
     if (src.status === "none") { state.plan = null; state.message = "branche l'image source (LoadImage)"; redraw(); return; }
     if (src.status === "unknown") { state.plan = null; state.message = "taille connue après run (source sans fichier)"; redraw(); return; }
     clearTimeout(state.timer);
@@ -243,6 +280,7 @@ function setup(node) {
   node.onRemoved = function () {
     clearInterval(state.interval);
     clearTimeout(state.timer);
+    state.observer?.disconnect();
     return onRemoved?.apply(this, arguments);
   };
   if (!node.size || node.size[0] < 420) node.setSize?.([420, node.size?.[1] ?? 400]);
@@ -262,9 +300,12 @@ app.registerExtension({
     nodeType.prototype.onExecuted = function (message) {
       onExecuted?.apply(this, arguments);
       const p = message?.aioli_plan?.[0];
-      if (p && this._aioliRP) {
-        this._aioliRP.plan = p;
-        draw(this._aioliRP);
+      const st = this._aioliRP;
+      if (p && st) {
+        st.seq++;                              // un apercu encore en vol n'ecrasera pas le run
+        st.plan = p;
+        st.sig = st.signature().sig;           // pas de nouvel apercu tant que rien ne change
+        draw(st);
       }
     };
   },

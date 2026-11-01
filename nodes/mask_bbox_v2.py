@@ -4,6 +4,7 @@ import torch
 
 from .bbox_core_v2 import (MAX_RESOLUTION, MULTIPLES,
                            compute_crop_v2)
+from .log import log
 from .tensor_utils import resize_lanczos
 
 
@@ -75,7 +76,7 @@ def pad_bbox(tight, padding, context, W_src, H_src):
     if context == "full_image":
         return 0, 0, W_src, H_src
     if tight is None:
-        print(f"[{LOG}] WARNING : mask vide -> bbox = image entiere")
+        log(f"[{LOG}] WARNING : mask vide -> bbox = image entiere")
         return 0, 0, W_src, H_src
     x0, x1, y0, y1 = tight
     x1p, x2p = max(0, x0 - padding), min(W_src, x1 + padding)

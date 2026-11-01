@@ -13,11 +13,16 @@ Resolution (route serveur pour l'apercu avant run, et execution du node).
 import torch
 import torch.nn.functional as F
 
-from .bbox_core_v2 import compute_crop_v2
-from .mask_bbox_v2 import pad_bbox, tight_bbox
+from .bbox_core_v2 import MAX_RESOLUTION, MULTIPLES, compute_crop_v2
+from .log import quiet
+from .mask_bbox_v2 import CONTEXTS, pad_bbox, tight_bbox
 from .mask_split_regions import MaskSplitRegions
-from .ratio_outpaint import RatioOutpaintCalc, outpaint_layout
+from .ratio_outpaint import RATIOS, RatioOutpaintCalc, outpaint_layout
 from .region_mask_list import RegionMaskList
+
+IMAGE_ENTIERE = "image entière"
+RATIO_OPTIONS = ["none"] + list(RATIOS.keys())
+MAX_PREVIEW_PIXELS = 40_000_000     # apercu avec masque : au-dela, regions au run
 
 DEFAULTS = dict(scale=1.0, ratio="none", regenerate_all=False, resolution=1024,
                 multiple="16 (Flux)", force_square=False, force_target_downscale=True,
@@ -46,24 +51,36 @@ def region_layout(src_w, src_h, mask=None, scale=1.0, ratio="none", regenerate_a
         PW, PH = lay[0], lay[1]
         pads = tuple(lay[2:6])          # gauche, droite, haut, bas
 
-    with torch.no_grad():
-        if mask is not None:
-            m = mask.float()
-            if m.dim() == 2:
-                m = m.unsqueeze(0)
-            in_mask = _quiet(RatioOutpaintCalc._input_mask, m, m.shape[0], sh, sw)
+    pl, pr, pt, pb = pads
+    if mask is None:
+        # Sans masque : Mask Split Regions ne rend rien, Region Mask List garde
+        # la region d'extra (bandes ou image entiere) ou, a defaut, l'image
+        # entiere. Calcul direct, sans tenseur pleine taille (teste contre la
+        # chaine dans tests/test_resolution_plan.py).
+        if regenerate_all or not any(pads):
+            out = [dict(kind=IMAGE_ENTIERE, tight=(0, PW, 0, PH))]
         else:
-            in_mask = torch.zeros((1, sh, sw), dtype=torch.float32)
+            x0, x1 = (0, PW) if (pt or pb) else ((0 if pl else pl + sw), (PW if pr else pl))
+            y0, y1 = (0, PH) if (pl or pr) else ((0 if pt else pt + sh), (PH if pb else pt))
+            out = [dict(kind="outpaint", tight=(x0, x1, y0, y1))]
+        return dict(source=(src_w, src_h), scaled=(sw, sh), padded=(PW, PH), pads=pads,
+                    regions=out)
+
+    with torch.no_grad(), quiet():
+        m = mask.float()
+        if m.dim() == 2:
+            m = m.unsqueeze(0)
+        in_mask = RatioOutpaintCalc._input_mask(m, m.shape[0], sh, sw)
         mask_padded = F.pad(in_mask, pads, mode="constant", value=0.0)
-        split, _ = _quiet(MaskSplitRegions().split, mask_padded, empty_mask="nothing")
+        split, _ = MaskSplitRegions().split(mask_padded, empty_mask="nothing")
         if regenerate_all:
-            extra, extra_kind = torch.ones((1, PH, PW)), "image entiere"
+            extra, extra_kind = torch.ones((1, PH, PW)), IMAGE_ENTIERE
         else:
             extra = F.pad(torch.zeros((1, sh, sw)), pads, mode="constant", value=1.0)
             extra_kind = "outpaint"
-        regions, _, _ = _quiet(RegionMaskList().build, list(split), add_background=[False],
-                               threshold=[0.5], min_bg_area=[0.0], extra_mask=[extra],
-                               empty=["full_image"])
+        regions, _, _ = RegionMaskList().build(list(split), add_background=[False],
+                                               threshold=[0.5], min_bg_area=[0.0],
+                                               extra_mask=[extra], empty=["full_image"])
 
     n_drawn = sum(1 for r in split if (r >= 0.5).any())
     out = []
@@ -73,7 +90,7 @@ def region_layout(src_w, src_h, mask=None, scale=1.0, ratio="none", regenerate_a
         elif k == n_drawn and (extra >= 0.5).any():
             kind = extra_kind
         else:
-            kind = "image entiere"          # aucun masque : toute l'image est editee
+            kind = IMAGE_ENTIERE           # aucun masque : toute l'image est editee
         out.append(dict(kind=kind, tight=tight_bbox(r)))
     return dict(source=(src_w, src_h), scaled=(sw, sh), padded=(PW, PH), pads=pads,
                 regions=out)
@@ -85,9 +102,10 @@ def plan_from_layout(lay, resolution=1024, multiple="16 (Flux)", force_square=Fa
     PW, PH = lay["padded"]
     regions = []
     for k, r in enumerate(lay["regions"]):
-        x, y, w, h = _quiet(pad_bbox, r["tight"], padding, context, PW, PH)
-        c = _quiet(compute_crop_v2, x, y, w, h, PW, PH, multiple, resolution,
-                   force_square, force_target_downscale)
+        with quiet():
+            x, y, w, h = pad_bbox(r["tight"], padding, context, PW, PH)
+            c = compute_crop_v2(x, y, w, h, PW, PH, multiple, resolution,
+                                force_square, force_target_downscale)
         cw, ch = c["orig_width"], c["orig_height"]
         l, t, rr, b = c["bands"]
         band_area = cw * ch - (cw - l - rr) * (ch - t - b)
@@ -156,10 +174,41 @@ def report(p):
     return "\n".join(lines)
 
 
-def _quiet(fn, *a, **k):
-    """Appelle fn sans ses print (les nodes journalisent beaucoup)."""
-    import contextlib
-    import io
-    with contextlib.redirect_stdout(io.StringIO()):
-        res = fn(*a, **k)
-    return res
+def validate_settings(raw):
+    """
+    Reglages recus du navigateur -> dict valide, bornes comme les widgets du
+    panneau. ValueError (message lisible) si une valeur sort des plages.
+    """
+    s = dict(DEFAULTS)
+    raw = raw or {}
+
+    def num(key, kind, lo, hi):
+        v = raw.get(key, s[key])
+        if isinstance(v, bool) or not isinstance(v, (int, float)):
+            raise ValueError(f"{key} : nombre attendu")
+        v = kind(v)
+        if not (lo <= v <= hi):
+            raise ValueError(f"{key} hors plage ({lo}-{hi}) : {v}")
+        return v
+
+    def choice(key, options):
+        v = raw.get(key, s[key])
+        if v not in options:
+            raise ValueError(f"{key} inconnu : {v!r}")
+        return v
+
+    def flag(key):
+        v = raw.get(key, s[key])
+        if not isinstance(v, bool):
+            raise ValueError(f"{key} : booleen attendu")
+        return v
+
+    s["scale"] = num("scale", float, 0.01, 8.0)
+    s["resolution"] = num("resolution", int, 0, MAX_RESOLUTION)
+    s["padding"] = num("padding", int, 0, 4096)
+    s["ratio"] = choice("ratio", RATIO_OPTIONS)
+    s["multiple"] = choice("multiple", MULTIPLES)
+    s["context"] = choice("context", CONTEXTS)
+    for k in ("regenerate_all", "force_square", "force_target_downscale"):
+        s[k] = flag(k)
+    return s
