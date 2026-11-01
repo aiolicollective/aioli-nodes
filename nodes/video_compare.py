@@ -9,8 +9,8 @@ images pleine resolution sans perte. Widget : web/aioli_video_compare.js.
   + proxy JPEG) dans le temp de ComfyUI et lues par /view.
 - Le node s'execute a chaque run (not_idempotent) : son widget pointe toujours
   vers des images qui existent, quel que soit le cache de ComfyUI. Si ses
-  entrees n'ont pas change (meme empreinte), il reutilise instantanement les
-  images deja ecrites. Il garde ses KEEP_PER_NODE dernieres sessions (allers-
+  entrees sont les memes (meme objet transmis par ComfyUI, ou meme fichier
+  video inchange), il reutilise instantanement les images deja ecrites. Il garde ses KEEP_PER_NODE dernieres sessions (allers-
   retours A / B entre reglages) ; au plus MAX_NODES nodes ; le temp est vide
   par ComfyUI a chaque demarrage.
 - Geometrie d'affichage : la plus grande des deux ; l'autre clip est agrandi a
@@ -26,10 +26,11 @@ import uuid
 from collections import OrderedDict
 
 import folder_paths
+import torch
 from comfy_api.latest import io
 
-from .video_compare_core import (display_geometry, iter_frames, proxy_size, same_clock, signature,
-                                 write_clip)
+from .video_compare_core import (display_geometry, iter_frames, proxy_size, same_clock, same_input,
+                                 signature, write_clip)
 
 SUBFOLDER = "aioli_vcmp"
 MAX_NODES = 16
@@ -43,12 +44,14 @@ def _fps_input(key, label):
                           tooltip="Frame rate when this side is an IMAGE batch (a VIDEO keeps its own).")
 
 
-def _find(uid, sig):
-    """Session existante de ce node pour ces entrees (dossier encore present)."""
+def _find(uid, a, b):
+    """Session existante de ce node pour ces memes entrees (dossier encore present)."""
     with _LOCK:
-        for sess in _NODES.get(uid, []):
-            if sess["sig"] == sig and os.path.isdir(sess["folder"]):
-                return sess
+        sessions = list(_NODES.get(uid, []))
+    for sess in sessions:
+        if (same_input(sess["sig"][0], a) and same_input(sess["sig"][1], b)
+                and os.path.isdir(sess["folder"])):
+            return sess
     return None
 
 
@@ -91,8 +94,7 @@ class AioliVideoCompare(io.ComfyNode):
     @classmethod
     def execute(cls, a, b, fps_a, fps_b, label_a, label_b) -> io.NodeOutput:
         uid = str(cls.hidden.unique_id) if cls.hidden and cls.hidden.unique_id else "?"
-        sig = (signature(a, fps_a), signature(b, fps_b))
-        sess = _find(uid, sig)
+        sess = _find(uid, a, b)
         reused = sess is not None
         if not reused:
             sid = uuid.uuid4().hex[:12]
@@ -106,11 +108,17 @@ class AioliVideoCompare(io.ComfyNode):
             except Exception:
                 shutil.rmtree(folder, ignore_errors=True)
                 raise
-            sess = dict(sid=sid, folder=folder, sig=sig, clips=clips)
+            sess = dict(sid=sid, folder=folder, sig=(signature(a), signature(b)), clips=clips,
+                        is_image={"a": isinstance(a, torch.Tensor), "b": isinstance(b, torch.Tensor)})
         _remember(uid, sess)
 
         ma = dict(sess["clips"]["a"], label=str(label_a))
         mb = dict(sess["clips"]["b"], label=str(label_b))
+        # fps d'une IMAGE : celui du widget de CE run (changer le fps ne reecrit rien)
+        if sess["is_image"]["a"]:
+            ma["fps"] = float(fps_a)
+        if sess["is_image"]["b"]:
+            mb["fps"] = float(fps_b)
         for m in (ma, mb):
             m["duration"] = m["n"] / m["fps"]
         display = display_geometry(ma, mb)

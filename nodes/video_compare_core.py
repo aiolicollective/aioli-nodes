@@ -17,6 +17,7 @@ deux decodeurs video ne restent pas cales a l'image pres.
 """
 
 import os
+import weakref
 from concurrent.futures import ThreadPoolExecutor
 from fractions import Fraction
 
@@ -124,30 +125,37 @@ def same_clock(fa, fb, rel=1e-4):
     return abs(fa - fb) <= rel * max(fa, fb)
 
 
-def signature(value, fps):
+def signature(value):
     """
-    Empreinte bon marche d'une entree, pour reutiliser les images deja ecrites
-    quand le node est relance sans changement : forme + echantillon du contenu
-    (IMAGE), ou source, trim, recadrage, taille et nombre d'images (VIDEO).
+    Identite d'une entree, pour reutiliser les images deja ecrites quand le
+    node est relance SANS changement. Ne se trompe jamais :
+      - fichier video sur disque : chemin, taille, date (ns), trim, recadrage ;
+      - tout le reste (IMAGE, video en memoire) : le MEME objet que la fois
+        precedente (reference faible : rien n'est retenu en memoire). Quand
+        l'amont n'a pas change, ComfyUI transmet exactement le meme objet ;
+        sinon les images sont reecrites.
+    Le fps n'en fait pas partie (donnee d'affichage).
     """
-    if isinstance(value, torch.Tensor):
-        t = value.detach()
-        step = max(1, int(t.shape[1]) // 64), max(1, int(t.shape[2]) // 64)
-        sample = t[:, ::step[0], ::step[1]].float()
-        return ("image", tuple(t.shape), str(t.dtype), round(float(sample.sum()), 4),
-                round(float((sample * sample).sum()), 4), float(fps))
-    parts = [type(value).__name__]
-    for getter in ("get_stream_source", "get_active_trim_window", "get_dimensions",
-                   "get_frame_count", "get_frame_rate"):
+    if type(value).__name__ == "VideoFromFile":
         try:
-            v = getattr(value, getter)()
-            parts.append(v if isinstance(v, (str, int, float, tuple)) else str(v))
+            src = value.get_stream_source()          # chemin ou BytesIO, sans decodage
+            if isinstance(src, str) and os.path.isfile(src):
+                st = os.stat(src)
+                return ("file", os.path.realpath(src), st.st_size, st.st_mtime_ns,
+                        tuple(value.get_active_trim_window()),
+                        str(getattr(value, "_VideoFromFile__crop", None)))
         except Exception:
-            parts.append(None)
-    crop = getattr(value, "_VideoFromFile__crop", None)
-    parts.append(str(crop))
-    if isinstance(parts[1], str) and os.path.isfile(parts[1]):
-        parts.append(os.path.getmtime(parts[1]))      # fichier reecrit sous le meme nom
-    if parts[1] is None or not isinstance(parts[1], str):
-        parts.append(id(value))          # pas de fichier : pas de reutilisation sure
-    return tuple(parts)
+            pass
+    try:
+        return weakref.ref(value)
+    except TypeError:
+        return None                                   # pas de reutilisation possible
+
+
+def same_input(sig, value):
+    """L'entree courante correspond-elle a cette identite ?"""
+    if sig is None:
+        return False
+    if isinstance(sig, weakref.ref):
+        return sig() is value
+    return sig == signature(value)

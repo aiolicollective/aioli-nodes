@@ -46,3 +46,17 @@ def test_geometry_and_clock():
     a, b = dict(w=1920, h=1080), dict(w=3840, h=2160)
     assert display_geometry(a, b) == (3840, 2160)                                # la plus grande
     assert same_clock(30000 / 1001, 29.97) and not same_clock(24.0, 48.0)
+
+
+def test_signature_never_reuses_changed_content(tmp_path):
+    """Reutilisation seulement pour le MEME objet, ou le meme fichier inchange."""
+    from nodes.video_compare_core import same_input, signature
+    a = torch.zeros(1, 512, 512, 3)
+    sig = signature(a)
+    assert same_input(sig, a)
+    b = a.clone()
+    b[:, 2:6, 2:6, :] = 1.0                          # petit changement entre deux echantillons
+    assert not same_input(sig, b)
+    assert not same_input(sig, a.clone())             # meme contenu, autre objet : on reecrit
+    del a
+    assert sig() is None                              # reference faible : rien n'est retenu
