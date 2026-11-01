@@ -114,29 +114,58 @@ def test_model_shift_is_magnified_by_crop_factor(scale):
 
 
 # ---------------------------------------------------------------------------
-# Defauts connus (audit v1.8) : xfail strict
+# Defauts corriges en v1.8 (etaient en xfail) et defauts connus restants
 # ---------------------------------------------------------------------------
 
-@pytest.mark.xfail(strict=True, reason="liseres : le gris des bandes deborde dans l'image au resize "
-                                       "(image entiere + SQUARE : ~7 niveaux sur ~16 px a x2.9)")
 def test_no_band_bleed_full_image_square():
+    """Liseres : le gris des bandes ne deborde plus dans l'image (v1.7.1 : 6,8 niveaux)."""
     src = make_image(3000, 2000, seed=3)
     m = measure(run_chain(src, make_mask(3000, 2000, "none"), resolution=1024, force_square=True))
-    assert m["edge_lp"] < 4.0, m          # sans bande : ~1-3 niveaux (Lanczos seul)
+    assert m["edge_lp"] < 2.0, m
 
 
-@pytest.mark.xfail(strict=True, reason="batch > 1 : Color Fix et Assembler ne traitent que l'image 0")
+def _model_red(crop, mask, info):
+    out = torch.zeros_like(crop)
+    out[..., 0] = 1.0
+    return out
+
+
+@pytest.mark.parametrize("adj, fea", [(0, 0), (0, 8), (-4, 8)])
+def test_mask_full_up_to_image_border(adj, fea):
+    """
+    Image entiere + SQUARE (bandes) : le masque reste plein jusqu'au bord de
+    l'image, l'original ne transparait pas (v1.7.1 : alpha 0,58-0,76 en ligne 0).
+    """
+    src = make_image(3000, 2000, seed=3)
+    run = run_chain(src, make_mask(3000, 2000, "none"), model=_model_red, resolution=1024,
+                    force_square=True, mask_adjust=adj, feather=fea)
+    comb = run["combined"][0].numpy()
+    assert comb.min() >= 0.999, float(comb.min())
+
+
 def test_batch_is_preserved():
     src = make_image(640, 480, seed=1, batch=2)
     run = run_chain(src, make_mask(640, 480, "blob", seed=1), resolution=1024, color_fix=True)
     assert run["result"].shape[0] == 2
+    # l'image b du batch = la chaine lancee sur l'image b seule
+    for b in range(2):
+        one = run_chain(src[b:b + 1], make_mask(640, 480, "blob", seed=1), resolution=1024, color_fix=True)
+        assert torch.equal(run["result"][b], one["result"][0])
+        assert torch.equal(run["combined"][b], one["combined"][0])
 
 
-@pytest.mark.xfail(strict=True, raises=RuntimeError,
-                   reason="base RGBA : l'assembleur plante sur le checker (palette 3 canaux)")
 def test_rgba_base_does_not_crash():
     src = make_image(640, 480, seed=1, channels=4)
-    run_chain(src, make_mask(640, 480, "blob", seed=1), resolution=1024)
+    run = run_chain(src, make_mask(640, 480, "blob", seed=1), resolution=1024)
+    assert run["result"].shape[-1] == 4
+    assert measure(run)["outside_changed"] == 0
+
+
+def test_rgba_color_fix_keeps_alpha():
+    """Base RGBA + Color Fix (qui rend du RVB) : l'alpha de la base est garde."""
+    src = make_image(640, 480, seed=1, channels=4)
+    run = run_chain(src, make_mask(640, 480, "blob", seed=1), resolution=1024, color_fix=True)
+    assert run["result"][..., 3].min().item() >= 0.999
 
 
 def test_model_returning_other_aspect_is_stretched():

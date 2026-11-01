@@ -3,6 +3,8 @@ import torch
 import torch.nn.functional as F
 import numpy as np
 
+from .tensor_utils import to_uint8
+
 
 class InpaintColorFix:
     """
@@ -187,13 +189,42 @@ class InpaintColorFix:
         if a.shape != (H, W):
             from PIL import Image
             a = np.array(
-                Image.fromarray((np.clip(a, 0, 1) * 255).astype(np.uint8)).resize((W, H), Image.LANCZOS)
+                Image.fromarray(to_uint8(np.clip(a, 0, 1))).resize((W, H), Image.LANCZOS)
             ).astype(np.float32) / 255.0
         return a
 
     def fix(self, original_crop, inpainted_crop,
             delta_e_threshold, blend_strength, feather_radius,
             mask=None, measure_area=None):
+        """
+        v1.8 : chaque image du batch est corrigee (avant : seule l'image 0).
+        Un original / masque / measure_area de batch 1 sert a toutes les images.
+        """
+        def pick(t, b):
+            """Element b du batch (IMAGE B,H,W,C ; MASK B,H,W ou H,W), garde en batch 1."""
+            if t is None:
+                return None
+            if t.dim() == 2:
+                return t.unsqueeze(0)
+            return t[min(b, t.shape[0] - 1)].unsqueeze(0)
+
+        B = max(original_crop.shape[0], inpainted_crop.shape[0])
+        sizes = [original_crop.shape[0], inpainted_crop.shape[0]]
+        if B > 1 and any(s not in (1, B) for s in sizes):
+            print(f"[InpaintColorFix] WARNING : batchs incoherents {sizes} "
+                  f"-> le dernier element est repete jusqu'a {B}")
+        imgs, masks = [], []
+        for b in range(B):
+            img, cm = self._fix_one(pick(original_crop, b), pick(inpainted_crop, b),
+                                    delta_e_threshold, blend_strength, feather_radius,
+                                    pick(mask, b), pick(measure_area, b))
+            imgs.append(img)
+            masks.append(cm)
+        return (torch.cat(imgs, 0), torch.cat(masks, 0))
+
+    def _fix_one(self, original_crop, inpainted_crop,
+                 delta_e_threshold, blend_strength, feather_radius,
+                 mask=None, measure_area=None):
 
         orig_np = original_crop[0].cpu().float().numpy()   # [H,W,C] 0-1
         inp_np  = inpainted_crop[0].cpu().float().numpy()  # [H,W,C] 0-1
@@ -208,7 +239,7 @@ class InpaintColorFix:
             from PIL import Image
             H, W    = inp_np.shape[:2]
             orig_np = np.array(
-                Image.fromarray((orig_np * 255).astype(np.uint8)).resize((W, H), Image.LANCZOS)
+                Image.fromarray(to_uint8(orig_np)).resize((W, H), Image.LANCZOS)
             ).astype(np.float32) / 255.0
 
         H, W = orig_np.shape[:2]
@@ -234,7 +265,7 @@ class InpaintColorFix:
             if active_mask.shape != (H, W):
                 from PIL import Image
                 active_mask = np.array(
-                    Image.fromarray((active_mask * 255).astype(np.uint8)).resize((W, H), Image.LANCZOS)
+                    Image.fromarray(to_uint8(active_mask)).resize((W, H), Image.LANCZOS)
                 ).astype(np.float32) / 255.0
             print(f"[InpaintColorFix] mode=mask_override  feather={feather_radius}px")
 

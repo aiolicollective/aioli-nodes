@@ -78,9 +78,9 @@ def make_image(w, h, seed=0, channels=3, batch=1):
         # (jusqu'a ~10 niveaux), ce qui masquerait les defauts propres au pack.
         # Contraste modere : un trait noir pur a 0 serait ecrete par le ringing
         # du Lanczos (hors pack) et fausserait la mesure de derive.
-        for k in range(13, w, 97):
+        for k in range(13, w - 13, 97):
             img[:, k:k + 1, :] = img[:, k:k + 1, :] * 0.55 + 0.05
-        for k in range(11, h, 89):
+        for k in range(11, h - 13, 89):
             img[k:k + 2, :, :] = img[k:k + 2, :, :] * 0.55 + 0.40
         img = np.clip(img, 0, 1)
         if channels == 4:
@@ -274,7 +274,7 @@ def measure(run):
                      des noyaux carres) entre un pixel modifie et la zone
                      dessinee (regions >= 0.5)
     reach_px         borne attendue : mask_adjust + feather + frange du resize du
-                     masque (Lanczos rayon 3 px modele, a l'echelle crop / modele)
+                     masque (deux Lanczos de rayon 3 : 3 px + 3 px x crop / modele)
     beyond_reach     pixels modifies au-dela de reach_px
     inner_*          ecart dans la zone pleinement recollee (combined >= 0.999),
                      hors bandes d'outpaint, en niveaux 8 bits :
@@ -303,7 +303,9 @@ def measure(run):
     adj, fea = run["cfg"]["mask_adjust"], run["cfg"]["feather"]
     # resize du masque (Lanczos 3 px modele) + chemin sous-echantillonne du
     # grow / feather au-dela de 24 px (bilineaire : ~1 cellule de plus)
-    fringe = math.ceil(3 * factor) + 1 + math.ceil(max(0, adj) / 24) + math.ceil(fea / 24)
+    # deux Lanczos (aller a l'echelle modele, retour a l'echelle crop) : 3 px de
+    # chaque cote de l'echelle la plus grossiere, +1 d'arrondi
+    fringe = 3 + math.ceil(3 * factor) + 1 + math.ceil(max(0, adj) / 24) + math.ceil(fea / 24)
     reach = max(0, adj) + fea + fringe
     if union.any():
         dist = ndimage.distance_transform_cdt(~union, metric="chessboard")
