@@ -148,3 +148,14 @@ def test_feather_rule_direct(adj, fea):
     if inside.any():
         assert a[inside].min() == 1.0
     assert a[out > max(0, adj) + fea].max() == 0.0
+
+
+@pytest.mark.parametrize("fea", [48, 49, 80])
+def test_feather_partial_opacity_mask(fea):
+    """Masque a 70 % (pinceau partiel) : pas de marche a 100 % au-dela du chemin plein resolution."""
+    from nodes.bbox_assembler import alpha_from_mask
+    m = torch.zeros(300, 300)
+    m[100:200, 100:200] = 0.7
+    a = alpha_from_mask(m, 0, fea)
+    assert abs(float(a[150, 150]) - 0.7) < 1e-6
+    assert float(a.max()) <= 0.7 + 1e-6

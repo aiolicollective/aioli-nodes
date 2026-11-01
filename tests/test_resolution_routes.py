@@ -62,15 +62,44 @@ def test_route_with_mask(routes):
     p = routes._compute("m.png", True, {"scale": 1.5, "ratio": "16:9", "resolution": 1024,
                                         "force_square": False})
     kinds = [r["kind"] for r in p["regions"]]
-    assert kinds == ["masque", "outpaint"]
+    assert kinds == ["mask", "outpaint"]
     assert p["scaled"] == [600, 450] and p["text"]
 
 
 def test_route_without_mask_and_errors(routes):
     p = routes._compute("rgb.png", True, {})          # pas d'alpha : chemin direct
-    assert [r["kind"] for r in p["regions"]] == ["image entière"]
+    assert [r["kind"] for r in p["regions"]] == ["whole image"]
     for name, settings, status in (("m.png", {"scale": 0}, 400), ("../x.png", {}, 400),
                                    ("absent.png", {}, 404), ("m.png", "x", 400)):
         with pytest.raises(routes.PreviewError) as e:
             routes._compute(name, False, settings)
         assert e.value.status == status
+
+
+def test_route_probe_formats(routes, tmp_path):
+    """Taille comme LoadImage : orientation EXIF (JPEG, PNG eXIf), MPO = 1 image, GIF sans decoder."""
+    rgb = np.zeros((200, 300, 3), np.uint8)
+    ex = Image.Exif()
+    ex[0x0112] = 6
+    Image.fromarray(rgb).save(tmp_path / "o6.jpg", exif=ex.tobytes())
+    Image.fromarray(rgb).save(tmp_path / "o6.png", exif=ex.tobytes())
+    Image.fromarray(rgb).save(tmp_path / "a.gif", save_all=True,
+                              append_images=[Image.fromarray(rgb + 90)])   # frames distinctes
+    for name, size, frames in (("o6.jpg", (200, 300), 1), ("o6.png", (200, 300), 1),
+                               ("a.gif", (300, 200), 2)):
+        W, H, n, loaded = routes._probe(str(tmp_path / name), name)
+        assert (W, H, n) == (*size, frames) and loaded is None, name
+
+
+def test_route_caps(routes, tmp_path):
+    """Plafond sur le canevas apres outpaint ; image animee refusee avec masque."""
+    big = np.zeros((10, 5000, 4), np.uint8)               # 5000x10 : petit, mais...
+    Image.fromarray(big, "RGBA").save(tmp_path / "wide.png")
+    with pytest.raises(routes.PreviewError) as e:          # ... 9:16 -> 5000x8896 = 44 MP
+        routes._compute("wide.png", True, {"ratio": "9:16"})
+    assert e.value.status == 400 and "canvas" in str(e.value)
+    rgb = np.zeros((50, 60, 3), np.uint8)
+    Image.fromarray(rgb).save(tmp_path / "anim.gif", save_all=True, append_images=[Image.fromarray(rgb + 90)])
+    with pytest.raises(routes.PreviewError):
+        routes._compute("anim.gif", True, {})
+    assert routes._compute("anim.gif", False, {})["regions"]   # sans masque : apercu possible

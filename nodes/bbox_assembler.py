@@ -125,15 +125,30 @@ def alpha_from_mask(mask_hw, mask_adjust, feather):
     grow, r = _feather_split(mask_adjust, feather)
     alpha = _feather_fast(_grow_shrink_fast(mask_hw, grow), r)
     if abs(grow) > _EXACT_RADIUS or r > _EXACT_RADIUS:
-        # bornes exactes (distance de Chebyshev, comme le noyau carre du grow) :
-        #   1 dans le masque (>= 0,5) apres mask_adjust, 0 au-dela de
-        #   mask_adjust + feather du masque (> 0)
-        m = mask_hw.detach().cpu().numpy()
-        inner = torch.from_numpy(_cheb_band(m >= 0.5, int(mask_adjust)))
-        outer = torch.from_numpy(_cheb_band(m > 0, int(mask_adjust) + int(feather)))
-        alpha = torch.where(inner.to(alpha.device), torch.ones_like(alpha), alpha)
-        alpha = torch.where(outer.to(alpha.device), alpha, torch.zeros_like(alpha))
+        # bornes exactes (noyau carre, comme le grow) : au moins le masque apres
+        # mask_adjust (opacite du masque gardee), 0 au-dela de mask_adjust +
+        # feather du masque (> 0)
+        m = mask_hw.detach().cpu().float().numpy()
+        inner = torch.from_numpy(_square_grow(m, int(mask_adjust))).to(alpha.device)
+        outer = torch.from_numpy(_cheb_band(m > 0, int(mask_adjust) + int(feather))).to(alpha.device)
+        alpha = torch.maximum(alpha, inner)          # masque apres mask_adjust, opacite comprise
+        alpha = torch.where(outer, alpha, torch.zeros_like(alpha))
     return alpha
+
+
+def _square_grow(m, k):
+    """
+    Grow (k > 0) / shrink (k < 0) exact d'un masque doux, noyau carre (comme le
+    max-pool du grow), bord de l'image prolonge. Filtres 1D separables (scipy),
+    cout independant de k.
+    """
+    from scipy import ndimage
+    if k == 0:
+        return m.copy()
+    size = 2 * abs(k) + 1
+    if k > 0:
+        return ndimage.maximum_filter(m, size=size, mode="nearest")
+    return ndimage.minimum_filter(m, size=size, mode="nearest")
 
 
 def _cheb_band(mask_bool, k):

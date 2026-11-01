@@ -26,8 +26,9 @@ class AioliResolutionPanel(io.ComfyNode):
             node_id="AioliResolutionPanel",
             display_name="📏 Aioli Resolution Panel",
             category="Aioli Nodes",
-            description="Regle et montre la resolution de la chaine inpaint / outpaint V2 "
-                        "(scale, outpaint, crop, taille modele, bandes), avant et apres run.",
+            description="Sets and shows how the inpaint / outpaint chain sizes the image "
+                        "(output scale, outpaint, crops, model size, bands), live before a run "
+                        "and exact after it.",
             is_output_node=True,
             inputs=[
                 io.Image.Input("image", optional=True,
@@ -35,32 +36,41 @@ class AioliResolutionPanel(io.ComfyNode):
                 io.Mask.Input("mask", optional=True,
                               tooltip="Masque dessine (sortie MASK du LoadImage) : regions du schema."),
                 io.Float.Input("scale", default=1.0, min=0.01, max=8.0, step=0.01,
-                               display_name="SCALE"),
+                               display_name="OUTPUT SCALE",
+                               tooltip="Size of the final image = source x this factor. "
+                                       "Does not change how much the model works."),
                 io.Combo.Input("ratio", options=RATIO_OPTIONS, default="none",
                                display_name="OUTPAINT RATIO"),
                 io.Boolean.Input("regenerate_all", default=False,
                                  display_name="REGENERATE WHOLE IMAGE"),
                 io.Int.Input("resolution", default=1024, min=0, max=MAX_RESOLUTION, step=64,
-                             display_name="RESOLUTION"),
+                             display_name="MODEL SIZE",
+                             tooltip="Model working size per region, square equivalent: 1024 = as many "
+                                     "pixels as 1024x1024 (~1 MP), whatever the ratio. Smaller crops are "
+                                     "enlarged to it. 0 = native size."),
                 io.Combo.Input("multiple", options=MULTIPLES, default="16 (Flux)"),
                 io.Boolean.Input("force_square", default=False, display_name="SQUARE"),
                 io.Boolean.Input("force_target_downscale", default=True,
-                                 display_name="DOWNSCALE TO RESOLUTION"),
-                io.Int.Input("padding", default=48, min=0, max=4096),
+                                 display_name="SHRINK BIG CROPS",
+                                 tooltip="On: a crop larger than MODEL SIZE^2 is shrunk to it. Off: it keeps "
+                                         "its native size, capped at 2048^2 (4.2 MP)."),
+                io.Int.Input("padding", default=48, min=0, max=4096,
+                             tooltip="Margin around each region's bbox (px). Keep it >= mask_adjust + "
+                                     "feather of the assembler, or the fade is cut at the crop edge."),
                 io.Combo.Input("context", options=CONTEXTS, default="region",
                                display_name="CONTEXT"),
             ],
             outputs=[
-                io.Float.Output("scale_out", display_name="SCALE"),
+                io.Float.Output("scale_out", display_name="OUTPUT SCALE"),
                 # Listes deroulantes en sortie : type "*" (AnyType). Le serveur
                 # refuse une sortie "COMBO" vers l'entree liste d'un node V1
                 # (comfy_execution/validation.py) ; "*" est accepte partout.
                 io.AnyType.Output("ratio_out", display_name="OUTPAINT RATIO"),
                 io.Boolean.Output("regenerate_all_out", display_name="REGENERATE WHOLE IMAGE"),
-                io.Int.Output("resolution_out", display_name="RESOLUTION"),
+                io.Int.Output("resolution_out", display_name="MODEL SIZE"),
                 io.AnyType.Output("multiple_out", display_name="multiple"),
                 io.Boolean.Output("force_square_out", display_name="SQUARE"),
-                io.Boolean.Output("force_target_downscale_out", display_name="DOWNSCALE TO RESOLUTION"),
+                io.Boolean.Output("force_target_downscale_out", display_name="SHRINK BIG CROPS"),
                 io.Int.Output("padding_out", display_name="padding"),
                 io.AnyType.Output("context_out", display_name="CONTEXT"),
                 io.String.Output("report", display_name="report"),

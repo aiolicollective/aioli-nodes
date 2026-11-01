@@ -4,7 +4,7 @@ avec les MEMES fonctions que les nodes (une seule source de verite) :
 
     ImageScaleBy (SCALE) -> Ratio Outpaint Calc (multiple = none)
       -> Mask Split Regions -> Region Mask List (+ bandes ou image entiere)
-      -> Aioli Mask BBox V2 (bbox, crop, taille modele, bandes)
+      -> Aioli Mask BBox (bbox, crop, taille modele, bandes)
 
 Sans dependance a ComfyUI (testable hors ComfyUI). Utilise par le panneau
 Resolution (route serveur pour l'apercu avant run, et execution du node).
@@ -22,7 +22,7 @@ from .mask_split_regions import MaskSplitRegions
 from .ratio_outpaint import RATIOS, RatioOutpaintCalc, outpaint_layout
 from .region_mask_list import RegionMaskList
 
-IMAGE_ENTIERE = "image entière"
+IMAGE_ENTIERE = "whole image"
 RATIO_OPTIONS = ["none"] + list(RATIOS.keys())
 MAX_PREVIEW_PIXELS = 40_000_000     # apercu avec masque : au-dela, regions au run
 
@@ -88,7 +88,7 @@ def region_layout(src_w, src_h, mask=None, scale=1.0, ratio="none", regenerate_a
     out = []
     for k, r in enumerate(regions):
         if k < n_drawn:
-            kind = "masque"
+            kind = "mask"
         elif k == n_drawn and (extra >= 0.5).any():
             kind = extra_kind
         else:
@@ -100,7 +100,7 @@ def region_layout(src_w, src_h, mask=None, scale=1.0, ratio="none", regenerate_a
 
 def plan_from_layout(lay, resolution=1024, multiple="16 (Flux)", force_square=False,
                      force_target_downscale=True, padding=48, context="region", **_):
-    """Partie rapide : bbox, crop, taille modele de chaque region (Aioli Mask BBox V2)."""
+    """Partie rapide : bbox, crop, taille modele de chaque region (Aioli Mask BBox)."""
     PW, PH = lay["padded"]
     regions = []
     for k, r in enumerate(lay["regions"]):
@@ -143,14 +143,19 @@ def _warnings(lay, regions, sw, sh, PW, PH):
     w = []
     cov = 100.0 * sw * sh / (PW * PH)
     if (PW, PH) != (sw, sh) and cov < 45:
-        w.append(f"outpaint : l'original ne couvre que {cov:.0f} % du canevas")
+        w.append(f"outpaint: the original covers only {cov:.0f} % of the canvas")
     for r in regions:
         if r["model_scale"] < 0.5:
-            w.append(f"R{r['index']} : crop reduit x{1 / r['model_scale']:.1f} pour le modele "
-                     f"(detail perdu ; un glissement de 1 px du modele = {1 / r['model_scale']:.1f} px)")
+            w.append(f"R{r['index']}: crop shrunk x{1 / r['model_scale']:.1f} for the model "
+                     f"(detail lost; a 1 px slide of the model = {1 / r['model_scale']:.1f} px in the result)")
         if r["band_pct"] >= 25:
-            w.append(f"R{r['index']} : {r['band_pct']:.0f} % de bandes grises dans le crop")
+            w.append(f"R{r['index']}: {r['band_pct']:.0f} % grey bands in the crop")
     return w
+
+
+def model_mp(s):
+    """Megapixels de la taille modele visee (equivalent carre)."""
+    return s["resolution"] ** 2 / 1e6
 
 
 def report(p):
@@ -159,19 +164,21 @@ def report(p):
     sw, sh = p["scaled"]
     PW, PH = p["padded"]
     lines = [f"source {p['source'][0]}x{p['source'][1]}"
-             + (f" -> SCALE x{s['scale']:g} = {sw}x{sh}" if [sw, sh] != p["source"] else "")
+             + (f" -> OUTPUT SCALE x{s['scale']:g} = {sw}x{sh}" if [sw, sh] != p["source"] else "")
              + (f" -> outpaint {s['ratio']} = {PW}x{PH} (original {p['coverage']:.0f} %)"
-                if [PW, PH] != [sw, sh] else "")]
+                if [PW, PH] != [sw, sh] else ""),
+             f"output {PW}x{PH} - model ~{model_mp(s):.1f} MP per region"
+             + (f" ({s['resolution']}^2)" if s["resolution"] else " (native size)")]
     for r in p["regions"]:
         x, y, w, h = r["bbox"]
         cx, cy, cw, ch = r["crop"]
         mw, mh = r["model"]
         sc = r["model_scale"]
-        size = ("pas de resize" if not r["resize"] else
+        size = ("no resize" if not r["resize"] else
                 f"{r['resize']} x{sc:.2f}" if sc >= 1 else f"{r['resize']} x{sc:.2f} (1/{1 / sc:.1f})")
-        lines.append(f"R{r['index']} {r['kind']} : bbox {w}x{h} @({x},{y}) -> crop {cw}x{ch} @({cx},{cy})"
-                     f" -> modele {mw}x{mh}, {size}"
-                     + (f", bandes {r['band_pct']:.0f} %" if r["band_pct"] else ""))
+        lines.append(f"R{r['index']} {r['kind']}: bbox {w}x{h} @({x},{y}) -> crop {cw}x{ch} @({cx},{cy})"
+                     f" -> model {mw}x{mh}, {size}"
+                     + (f", bands {r['band_pct']:.0f} %" if r["band_pct"] else ""))
     lines += [f"! {x}" for x in p["warnings"]]
     return "\n".join(lines)
 
@@ -184,27 +191,31 @@ def validate_settings(raw):
     s = dict(DEFAULTS)
     raw = {} if raw is None else raw
     if not isinstance(raw, dict):
-        raise ValueError("reglages : objet attendu")
+        raise ValueError("settings: object expected")
 
     def num(key, kind, lo, hi):
         v = raw.get(key, s[key])
-        if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v):
-            raise ValueError(f"{key} : nombre attendu")
+        try:
+            finite = not isinstance(v, bool) and isinstance(v, (int, float)) and math.isfinite(v)
+        except OverflowError:           # entier JSON geant
+            finite = False
+        if not finite:
+            raise ValueError(f"{key}: number expected")
         v = kind(v)
         if not (lo <= v <= hi):
-            raise ValueError(f"{key} hors plage ({lo}-{hi}) : {v}")
+            raise ValueError(f"{key} out of range ({lo}-{hi}): {v}")
         return v
 
     def choice(key, options):
         v = raw.get(key, s[key])
         if v not in options:
-            raise ValueError(f"{key} inconnu : {v!r}")
+            raise ValueError(f"{key}: unknown value {v!r}")
         return v
 
     def flag(key):
         v = raw.get(key, s[key])
         if not isinstance(v, bool):
-            raise ValueError(f"{key} : booleen attendu")
+            raise ValueError(f"{key}: boolean expected")
         return v
 
     s["scale"] = num("scale", float, 0.01, 8.0)

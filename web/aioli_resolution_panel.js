@@ -166,22 +166,27 @@ function draw(state) {
   // Texte : une ligne pour la chaine, une par region, puis les alertes.
   const st = plan.settings || {};
   let chain = `source ${size(plan.source)}`;
-  if (sw !== plan.source[0] || sh !== plan.source[1]) chain += ` → ×${st.scale} = ${size(plan.scaled)}`;
+  if (sw !== plan.source[0] || sh !== plan.source[1]) chain += ` → OUTPUT SCALE ×${st.scale} = ${size(plan.scaled)}`;
   if (PW !== sw || PH !== sh) chain += ` → ${st.ratio} = ${size(plan.padded)} (original ${Math.round(plan.coverage)} %)`;
-  const rows = [`<div class="aioli-rp-chain">${esc(chain)}</div>`];
+  // Resume : deux roles qu'on confond facilement (OUTPUT SCALE / MODEL SIZE).
+  const mp = st.resolution ? `~${(st.resolution * st.resolution / 1e6).toFixed(1)} MP per region (${st.resolution}²)`
+                           : "native size per region";
+  const summary = `output <b>${size(plan.padded)}</b> · model <b>${mp}</b>`;
+  const rows = [`<div class="aioli-rp-summary">${summary}</div>`,
+                `<div class="aioli-rp-chain">${esc(chain)}</div>`];
   plan.regions.forEach((r, k) => {
     const col = PALETTE[k % PALETTE.length];
     const sc = r.model_scale;
-    const rs = !r.resize ? "pas de resize"
+    const rs = !r.resize ? "no resize"
       : sc >= 1 ? `↑ ×${sc.toFixed(2)}` : `↓ ×${sc.toFixed(2)} (1/${(1 / sc).toFixed(1)})`;
-    const bands = r.band_pct ? ` · bandes ${Math.round(r.band_pct)} %` : "";
+    const bands = r.band_pct ? ` · bands ${Math.round(r.band_pct)} %` : "";
     rows.push(`<div><span class="aioli-rp-sw" style="background:${col}"></span>` +
               `<b>R${r.index}</b> ${esc(r.kind)} · crop ${size(r.crop.slice(2))} → <b>${size(r.model)}</b>` +
               ` · ${rs}${bands} <span class="aioli-rp-dim">(bbox ${size(r.bbox.slice(2))})</span></div>`);
   });
   for (const w of plan.warnings || []) rows.push(`<div class="aioli-rp-warn">⚠ ${esc(w)}</div>`);
-  for (const p of state.linked || []) rows.push(`<div class="aioli-rp-warn">⚠ ${esc(p)} est branché : aperçu avec la valeur du widget, valeur réelle au run</div>`);
-  rows.push(`<div class="aioli-rp-origin">${plan.origin === "run" ? "valeurs du dernier run" : "aperçu avant run"}</div>`);
+  for (const p of state.linked || []) rows.push(`<div class="aioli-rp-warn">⚠ ${esc(p)} is linked: preview uses the widget value, the real one is known at run time</div>`);
+  rows.push(`<div class="aioli-rp-origin">${plan.origin === "run" ? "values of the last run" : "preview before run"}</div>`);
   text.innerHTML = rows.join("");
 }
 
@@ -194,7 +199,8 @@ function installStyle() {
                 font: 11px/1.35 sans-serif; color: var(--input-text, #ddd); }
     .aioli-rp canvas { width:100%; height:${DIAGRAM_H}px; border-radius:4px; display:block; }
     .aioli-rp-text { display:flex; flex-direction:column; gap:1px; padding:0 2px; }
-    .aioli-rp-chain { opacity:.9; }
+    .aioli-rp-summary { font-size:12px; }
+    .aioli-rp-chain { opacity:.75; }
     .aioli-rp-sw { display:inline-block; width:8px; height:8px; border-radius:2px; margin-right:4px; }
     .aioli-rp-warn { color:#ffb347; }
     .aioli-rp-origin { opacity:.5; font-size:10px; }
@@ -211,7 +217,7 @@ function setup(node) {
   text.className = "aioli-rp-text";
   root.append(canvas, text);
 
-  const state = { canvas, text, plan: null, message: "branche l'image source (LoadImage)",
+  const state = { canvas, text, plan: null, message: "connect the source image (LoadImage)",
                   sig: null, timer: null, seq: 0 };
   node._aioliRP = state;
 
@@ -249,7 +255,7 @@ function setup(node) {
         else { state.plan = data; }
       }
     } catch (e) {
-      if (seq === state.seq) { state.plan = null; state.message = `aperçu indisponible (${e})`; }
+      if (seq === state.seq) { state.plan = null; state.message = `preview unavailable (${e})`; }
     }
     finally {
       clearTimeout(timeout);
@@ -275,8 +281,8 @@ function setup(node) {
     if (sig === state.sig) return;
     state.sig = sig;
     state.linked = linked;
-    if (src.status === "none") { state.plan = null; state.message = "branche l'image source (LoadImage)"; redraw(); return; }
-    if (src.status === "unknown") { state.plan = null; state.message = "taille connue après run (source sans fichier)"; redraw(); return; }
+    if (src.status === "none") { state.plan = null; state.message = "connect the source image (LoadImage)"; redraw(); return; }
+    if (src.status === "unknown") { state.plan = null; state.message = "size known after a run (source without a file)"; redraw(); return; }
     clearTimeout(state.timer);
     state.timer = setTimeout(() => refresh(src, settings), 120);
   }
@@ -312,7 +318,10 @@ app.registerExtension({
         st.seq++;                              // un apercu encore en vol n'ecrasera pas le run
         st.plan = p;
         const cur = st.signature();
-        const same = Object.keys(p.settings || {}).every((k) => p.settings[k] === cur.settings[k]);
+        // un reglage branche garde une valeur de widget differente du run : on ne le compare pas
+        const same = Object.keys(p.settings || {})
+          .filter((k) => !(cur.linked || []).includes(k))
+          .every((k) => p.settings[k] === cur.settings[k]);
         // reglages changes depuis la mise en file : on montre le run, puis un apercu frais
         st.sig = same ? cur.sig : null;
         draw(st);

@@ -10,7 +10,7 @@ Corps JSON : {"image": nom du fichier du LoadImage (ex. "photo.png",
   decodage, meme masque = 1 - alpha) ; au-dela de MAX_PREVIEW_PIXELS (image x
   SCALE), pas de regions en apercu : elles sont donnees au run.
 - Sans masque : seule la taille est lue (en-tete + orientation EXIF), sans
-  decoder l'image.
+  decoder l'image (JPEG, MPO, WebP, PNG, GIF ; autres formats : LoadImage).
 - Lecture seule, dans les dossiers input / output / temp de ComfyUI
   (folder_paths refuse les chemins qui en sortent).
 """
@@ -43,28 +43,37 @@ class PreviewError(Exception):
         self.status = status
 
 
-def _size_only(path, name):
+_ROTATED = (5, 6, 7, 8)          # orientations EXIF a 90 degres : largeur et hauteur echangees
+
+
+def _probe(path, name):
     """
-    Taille comme LoadImage la voit, et nombre d'images. JPEG / WebP : en-tete +
-    orientation EXIF, sans decoder. PNG : en-tete (pas d'orientation EXIF lue :
-    Pillow decoderait toute l'image). Autres formats (TIFF...) : LoadImage
-    lui-meme, pour etre exact.
+    Taille comme LoadImage la voit, nombre d'images, et (W, H, masque) si
+    LoadImage a deja du etre appele. Sans decoder pour JPEG / MPO / WebP / PNG /
+    GIF (en-tete + orientation EXIF) ; autres formats (TIFF...) : LoadImage.
     """
     with Image.open(path) as im:
         W, H = im.size
         fmt = (im.format or "").upper()
         frames = getattr(im, "n_frames", 1)
-        if fmt in ("JPEG", "MPO", "WEBP"):
-            try:
-                if im.getexif().get(0x0112, 1) in (5, 6, 7, 8):   # rotation de 90 degres
-                    W, H = H, W
-            except Exception:
-                pass
-            return W, H, frames
-        if fmt == "PNG":
-            return W, H, frames
-    W, H, _ = _load_with_mask(name)
-    return W, H, frames
+        if fmt == "MPO":
+            frames = 1                   # photo de telephone : LoadImage n'en garde qu'une
+        orient = 1
+        try:
+            if fmt in ("JPEG", "MPO", "WEBP"):
+                orient = im.getexif().get(0x0112, 1)
+            elif fmt == "PNG" and "exif" in im.info:   # chunk eXIf avant l'image : lisible
+                ex = Image.Exif()
+                ex.load(im.info["exif"])
+                orient = ex.get(0x0112, 1)
+        except Exception:
+            orient = 1
+        if fmt in ("JPEG", "MPO", "WEBP", "PNG", "GIF"):
+            if orient in _ROTATED:
+                W, H = H, W
+            return W, H, frames, None
+    loaded = _load_with_mask(name)
+    return loaded[0], loaded[1], frames, loaded
 
 
 def _load_with_mask(name):
@@ -82,9 +91,9 @@ def _compute(name, use_mask, raw_settings):
     try:
         path = folder_paths.get_annotated_filepath(name)
     except ValueError:
-        raise PreviewError("chemin d'image refuse", 400)
+        raise PreviewError("image path refused", 400)
     if not os.path.isfile(path):
-        raise PreviewError(f"image introuvable : {name}", 404)
+        raise PreviewError(f"image not found: {name}", 404)
 
     key = (path, os.path.getmtime(path), bool(use_mask), s["scale"], s["ratio"], s["regenerate_all"])
     with _LOCK:
@@ -92,7 +101,7 @@ def _compute(name, use_mask, raw_settings):
         if lay is not None:
             _CACHE.move_to_end(key)
     if lay is None:
-        W, H, frames = _size_only(path, name)
+        W, H, frames, loaded = _probe(path, name)
         mask = None
         if use_mask:
             # cout du chemin avec masque : canevas apres SCALE et outpaint, par image
@@ -100,12 +109,12 @@ def _compute(name, use_mask, raw_settings):
             ol = outpaint_layout(sw, sh, s["ratio"], "none")
             PW, PH = (ol[0], ol[1]) if ol else (sw, sh)
             if frames > 1:
-                raise PreviewError("image animee : regions du masque donnees au run", 400)
+                raise PreviewError("animated image: mask regions are given at run time", 400)
             if PW * PH > MAX_PREVIEW_PIXELS:
-                raise PreviewError(f"canevas {PW}x{PH} ({PW * PH / 1e6:.0f} MP) : regions du "
-                                   f"masque donnees au run (apercu limite a "
+                raise PreviewError(f"canvas {PW}x{PH} ({PW * PH / 1e6:.0f} MP): mask regions are "
+                                   f"given at run time (preview limited to "
                                    f"{MAX_PREVIEW_PIXELS / 1e6:.0f} MP)", 400)
-            W, H, mask = _load_with_mask(name)
+            W, H, mask = loaded or _load_with_mask(name)
             if not bool((mask > 0).any()):
                 mask = None                   # pas d'alpha / masque vide : chemin direct
         lay = region_layout(W, H, mask, s["scale"], s["ratio"], s["regenerate_all"])
@@ -125,12 +134,12 @@ async def resolution_plan(request):
     try:
         data = await request.json()
     except Exception:
-        return web.json_response({"error": "requete invalide (JSON attendu)"}, status=400)
+        return web.json_response({"error": "invalid request (JSON expected)"}, status=400)
     if not isinstance(data, dict):
-        return web.json_response({"error": "requete invalide"}, status=400)
+        return web.json_response({"error": "invalid request"}, status=400)
     name = data.get("image")
     if not isinstance(name, str) or not name:
-        return web.json_response({"error": "pas d'image source"}, status=400)
+        return web.json_response({"error": "no source image"}, status=400)
     try:
         loop = asyncio.get_running_loop()
         p = await loop.run_in_executor(None, _compute, name, data.get("use_mask") is True,
