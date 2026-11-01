@@ -159,7 +159,7 @@ def model_summary(p):
     if not mps:
         return "-"
     lo, hi = min(mps), max(mps)
-    return f"{hi:.1f} MP" if hi - lo < 0.05 else f"{lo:.1f}-{hi:.1f} MP per region"
+    return f"{hi:.1f} MP" if hi - lo < 0.05 else f"{lo:.1f}–{hi:.1f} MP per region"
 
 
 def report(p):

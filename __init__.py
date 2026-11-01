@@ -55,4 +55,12 @@ try:
 except Exception as e:  # pragma: no cover
     print(f"[aioli-nodes] Resolution Panel indisponible : {e}")
 
+# v1.8 : comparateur video A / B (API V3, widget JS dans web/).
+try:
+    from .nodes.video_compare import AioliVideoCompare
+    NODE_CLASS_MAPPINGS["AioliVideoCompare"] = AioliVideoCompare
+    NODE_DISPLAY_NAME_MAPPINGS["AioliVideoCompare"] = "🎞️ Aioli Video Compare"
+except Exception as e:  # pragma: no cover
+    print(f"[aioli-nodes] Video Compare indisponible : {e}")
+
 __all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS", "WEB_DIRECTORY"]
