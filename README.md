@@ -1,8 +1,8 @@
 # Aioli Nodes — ComfyUI Custom Node Suite
 
-Nodes for outpainting, inpainting and **multi-region** (SAM3 or hand-drawn) editing in ComfyUI, with one promise: **zero pixel shift and zero colour drift on everything that is not regenerated** — plus a **📏 Resolution Panel** that shows, live, how the image is scaled, padded and cropped, and ready-to-run example workflows, including three that work out-of-the-box on **ComfyUI Cloud** (no install required).
+Nodes for outpainting, inpainting and **multi-region** (SAM3 or hand-drawn) editing in ComfyUI, with one promise: **zero pixel shift and zero colour drift on everything that is not regenerated** — plus a **📏 Resolution Panel** that shows, live, how the image is scaled, padded and cropped, a frame-exact **🎞️ Video Compare**, and ready-to-run example workflows (Flux 3 Klein, Qwen Image 2.1, Nano Banana), plus older ones that work out-of-the-box on **ComfyUI Cloud** (no install required).
 
-> **1.8.0 —** New **📏 Resolution Panel**: set the sizing of the chain and see it to scale, live, before running (legacy canvas and Nodes 2.0). **🧩 BBox Multiple Assembler** / **👁 Region Preview**: `feather` now fades **outward** from the mask — the mask stays at 100 % up to its edge, and `mask_adjust = −feather` touches nothing outside the drawn stroke. **📐 Aioli Mask BBox** (key `AioliMaskBBoxV2` unchanged, no longer displayed "V2"): no more grey fringe at the image border when the crop has bands and is resized, and the mask stays full up to the image border. Batches > 1 are processed image by image (only the first image came out before). Rounding instead of truncation before every Lanczos resize (a −0.5 level bias in pasted zones is gone). Assembler 2–6× faster. Legacy nodes render bit-identically to 1.7.1. **Visible changes on existing workflows:** the feather (now outward), the image border when the crop has bands, ≤ 1 level from rounding. MIT licence file added; tests in `tests/`.
+> **1.8.0 —** New **📏 Resolution Panel**: set the sizing of the chain and see it to scale, live, before running (legacy canvas and Nodes 2.0). New **🎞️ Video Compare**: two clips (VIDEO or IMAGE batch) side by side, wipe, difference, toggle, frame-exact play / step, lossless full-resolution frames on pause. New example workflows (Flux 3 Klein, Qwen Image 2.1, Nano Banana) wired to the panel, with a **MASKED LATENT** test switch. **🧩 BBox Multiple Assembler** / **👁 Region Preview**: `feather` now fades **outward** from the mask — the mask stays at 100 % up to its edge, and `mask_adjust = −feather` touches nothing outside the drawn stroke. **📐 Aioli Mask BBox** (key `AioliMaskBBoxV2` unchanged, no longer displayed "V2"): no more grey fringe at the image border when the crop has bands and is resized, and the mask stays full up to the image border. Batches > 1 are processed image by image (only the first image came out before). Rounding instead of truncation before every Lanczos resize (a −0.5 level bias in pasted zones is gone). Assembler 2–6× faster. Legacy nodes render bit-identically to 1.7.1. **Visible changes on existing workflows:** the feather (now outward), the image border when the crop has bands, ≤ 1 level from rounding. MIT licence file added; tests in `tests/`.
 
 > **1.7.1 —** **🖼️ Ratio Outpaint Calc** can pad a drawn mask exactly like the image (`mask` → `mask_padded`), and **🧱 Region Mask List** can add the outpaint bands as one more region (`extra_mask`) and turn "no region" into the whole image (`empty = full_image`). Outpaint and inpaint now run in the same pass. Fix: when rounding to `multiple` made the padded image *smaller* than the source on one side (a crop of a few pixels), the band `mask` was wrong — it now follows the image exactly. Prefer `multiple = none` when Aioli Mask BBox handles the multiples downstream: it only ever enlarges.
 >
@@ -440,7 +440,73 @@ ImageToMask → ✂️ Mask Split Regions → 📐 Aioli Mask BBox → … per-r
 
 ---
 
+## 🎞️ Video Compare
+
+Judge two versions of a clip **frame by frame**: upscales (RTX VSR, SeedVR2, Topaz…), interpolations, model or setting versions. A and B are each a **VIDEO** (LoadVideo, any core video output) or an **IMAGE batch** (+ its fps).
+
+- **Modes:** wipe (drag the split) · side by side · difference (gain ×1 / ×4 / ×16) · toggle (click or `T`) · swap A ⇄ B.
+- **Play, scrub, step** (`space`, `←` / `→`), speed ×0.25 to ×2, loop. A and B always show the frame of the same instant: one clock for both, frame-exact; at different frame rates (×2 interpolation) each side shows its own frame for that instant. The shorter clip holds its last frame.
+- **Zoom** fit / 1:1 / 2:1 (mouse wheel); when zoomed, drag to pan (`shift` + drag in wipe mode).
+- **Lossless when paused:** playback uses JPEG proxies (long side ≤ 1280, 4:4:4); on pause, step and zoom the node shows the **full-resolution PNG frames** — the info line says `full resolution (lossless)`, and the difference is then computed on those pixels.
+- **Warnings** on the node: different sizes (the smaller clip is enlarged for display only, its pixels are not changed), different aspect ratios (each is fitted, never stretched), different frame rates or lengths.
+
+**Inputs** (no outputs — a viewer)
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| A | VIDEO or IMAGE | First clip |
+| B | VIDEO or IMAGE | Second clip |
+| fps A (IMAGE) | FLOAT | Frame rate of A when A is an IMAGE batch (a VIDEO keeps its own). Default `24` |
+| fps B (IMAGE) | FLOAT | Same for B |
+| label_a / label_b | STRING | Names shown on the image. Default `A` / `B` |
+
+**How it works** — frames are played as an image sequence on a `<canvas>` (no `<video>`: 4:2:0 encoding would smooth the very detail you want to judge, difference mode would show encoding noise, and two video decoders don't stay in sync to the frame). Each frame is written **once** to ComfyUI's temp folder (PNG + JPEG proxy) and served by `/view`; nothing is kept in RAM after the run, and the browser keeps at most 768 MB of decoded proxies. A VIDEO is decoded by ComfyUI itself (`get_components`: same trim, crop, rotation and colour conversion as the rest of the graph). Running again on the **same content** (exact fingerprint of the images, or the same unchanged video file) reuses the frames already written; changing only an fps or a label rewrites nothing. The temp folder is emptied by ComfyUI at each start: after a restart, run the node again.
+
+Works in the **legacy canvas and Nodes 2.0** (DOM widget, readable JS in `web/`, no build step, no external library). Needs the V3 node API (`comfy_api.latest`, tested on ComfyUI 0.43.2 / frontend 1.57.4); without it the node is skipped and the rest of the pack loads.
+
+```
+LoadVideo (original) ───────→ A ─┐
+                                  ├─→ 🎞️ Video Compare
+your upscale (VIDEO / IMAGE) → B ─┘
+```
+
+---
+
+## 📦 Example workflows — Flux 3 Klein · Qwen Image 2.1 · Nano Banana
+
+Three ready-to-run workflows, one chain, one subgraph per model. **What you give decides what it does** — no mode switches:
+
+- a drawn mask (or SAM3 / LLM masking): inpaint per region, each region cropped, generated and pasted back on its own;
+- mask + `CONTEXT = full_image`: the model sees the whole image, only the masked zones are pasted back;
+- no mask: the whole image is edited;
+- `OUTPAINT RATIO`: only the new bands are generated — with a mask, outpaint and inpaint run in the same pass;
+- `REGENERATE WHOLE IMAGE`: the whole image as one more region.
+
+| Workflow | Model | Download |
+|---|---|---|
+| Flux 3 Klein | FLUX 3 Image Klein (distilled or base) + prompt upsampler | [`aioli_INPAINT_Img_Flux3-Klein_v3.json`](examples/aioli_INPAINT_Img_Flux3-Klein_v3.json) |
+| Qwen Image 2.1 | Qwen Image 2.1 (`multiple = 32`) | [`aioli_INPAINT_Img_Qwen-Image-2-1_v3.json`](examples/aioli_INPAINT_Img_Qwen-Image-2-1_v3.json) |
+| Nano Banana | Gemini image (API partner node, Comfy account) | [`aioli_INPAINT_Img_Nano-Banana_v3.json`](examples/aioli_INPAINT_Img_Nano-Banana_v3.json) |
+
+**Chain** (inside the subgraph)
+```
+LoadImage (+ drawn mask) ──→ 📏 Resolution Panel ──settings──┐
+        │                                                    ▼
+        └→ ImageScaleBy (OUTPUT SCALE) → 🖼️ Ratio Outpaint Calc → ✂️ Mask Split Regions / SAM3
+             → 🧱 Region Mask List (+ outpaint bands) → 📐 Aioli Mask BBox → model
+             → 🎨 Inpaint Color Fix → 🧩 BBox Multiple Assembler        (👁 Region Preview on the side)
+```
+
+- **📏 Resolution Panel** at the root carries the sizing settings (OUTPUT SCALE, OUTPAINT RATIO, REGENERATE WHOLE IMAGE, MODEL SIZE, multiple, SQUARE, SHRINK BIG CROPS, padding, CONTEXT) and shows the whole chain to scale before you run.
+- **MASKED LATENT (test)** — Flux 3 Klein and Qwen only, off by default (off = the same execution graph as before, node for node). On, the sampler starts from the encoded crop with the region mask (`VAE Encode` → `Set Latent Noise Mask`, plus `Differential Diffusion`) instead of an empty latent, and the crop stays the reference. Outside the mask the latent is put back at every step, so the model can no longer slide or zoom the context. Try it on a case where you saw a shift at the seam. No effect without a mask. Qwen: keep `multiple = 32`.
+- The notes in each workflow list the models and the settings.
+
+**Needs** aioli-nodes ≥ 1.8.0 and [ComfyUI-KJNodes](https://github.com/kijai/ComfyUI-KJNodes) (`LazySwitchKJ`, `ImageResizeKJv2`); everything else is ComfyUI core (tested on ComfyUI 0.43.2, frontend 1.57.4, legacy canvas and Nodes 2.0).
+
+---
+
 ## ☁️ ComfyCloud-compatible workflows (no install required)
+
+> Older pure-subgraph workflows (no aioli node), kept for setups where custom nodes can't be installed. With aioli-nodes installed, prefer the [example workflows](#-example-workflows--flux-3-klein--qwen-image-21--nano-banana) above.
 
 If you don't want to install the custom node locally — or if you're running **ComfyUI Cloud** where custom nodes aren't available — there are three pure-subgraph workflows that reproduce the `BBoxMultipleFix` behaviour using only pre-installed nodes.
 
@@ -539,7 +605,7 @@ Load Image (+ SAM3 masks  OR  hand-drawn mask → ✂️ Mask Split Regions)
 | Text encoder | `qwen_3_8b_fp8mixed.safetensors` |
 
 **Aioli nodes showcased**
-`MaskSplitRegions` · `RegionMaskList` · `AioliMaskBBox` · `InpaintColorFix` · `BBoxMultipleAssembler` · `RegionPreview` — plus **ComfyUI Essentials** (`ImageResize+`) and **ComfyUI KJNodes** (`GrowMaskWithBlur`). *(The published JSON still wires `MaskBoundingBox+` → `BBoxMultipleFix`; both still work — see [Migrating from BBox Multiple Fix](#migrating-from--bbox-multiple-fix). New examples built on Aioli Mask BBox are coming.)*
+`MaskSplitRegions` · `RegionMaskList` · `AioliMaskBBox` · `InpaintColorFix` · `BBoxMultipleAssembler` · `RegionPreview` — plus **ComfyUI Essentials** (`ImageResize+`) and **ComfyUI KJNodes** (`GrowMaskWithBlur`). *(This older JSON still wires `MaskBoundingBox+` → `BBoxMultipleFix`; both still work — see [Migrating from BBox Multiple Fix](#migrating-from--bbox-multiple-fix). For the current chain on Aioli Mask BBox, see the [example workflows](#-example-workflows--flux-3-klein--qwen-image-21--nano-banana).)*
 
 **Usage**
 1. Download the JSON and drag it into ComfyUI
@@ -558,6 +624,8 @@ python -m pytest tests/                                   # with ComfyUI's Pytho
 AIOLI_CHAIN_N=400 AIOLI_GEOM_N=300000 python -m pytest tests/   # long run
 python tests/chain.py --shift                             # how a model slide shows up in the result
 python tests/browser/check_panel.py                       # panel in legacy + Nodes 2.0 (running ComfyUI + Playwright)
+python tests/browser/check_video_compare.py               # Video Compare: sync, step, lossless pause (idem)
+python tests/browser/check_workflows.py                   # example workflows load, convert and wire cleanly (idem)
 ```
 
 ---
