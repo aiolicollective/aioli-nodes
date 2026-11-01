@@ -60,6 +60,39 @@ def _crop_with_bands(t, x, y, cw, ch, fill):
     return out
 
 
+def tight_bbox(mask):
+    """Bbox serre (x0, x1, y0, y1) de mask > 0, tous batchs confondus ; None si vide."""
+    nz = torch.nonzero(mask > 0)
+    if nz.numel() == 0:
+        return None
+    y_idx, x_idx = nz[:, -2], nz[:, -1]
+    return int(x_idx.min()), int(x_idx.max()) + 1, int(y_idx.min()), int(y_idx.max()) + 1
+
+
+def pad_bbox(tight, padding, context, W_src, H_src):
+    """Bbox (x, y, width, height) : bbox serre + padding, borne par l'image.
+    full_image ou masque vide (tight None) -> image entiere."""
+    if context == "full_image":
+        return 0, 0, W_src, H_src
+    if tight is None:
+        print(f"[{LOG}] WARNING : mask vide -> bbox = image entiere")
+        return 0, 0, W_src, H_src
+    x0, x1, y0, y1 = tight
+    x1p, x2p = max(0, x0 - padding), min(W_src, x1 + padding)
+    y1p, y2p = max(0, y0 - padding), min(H_src, y1 + padding)
+    return x1p, y1p, x2p - x1p, y2p - y1p
+
+
+def mask_bbox(mask, padding, context):
+    """
+    Bbox (x, y, width, height) d'un MASK (B, H, W) deja a la taille de l'image,
+    padding compris. Partagee avec le panneau Resolution.
+    """
+    H_src, W_src = mask.shape[-2], mask.shape[-1]
+    tight = None if context == "full_image" else tight_bbox(mask)
+    return pad_bbox(tight, padding, context, W_src, H_src)
+
+
 class AioliMaskBBoxV2:
     """
     Image + mask -> crop pret pour le modele, une seule regle de geometrie.
@@ -172,20 +205,7 @@ class AioliMaskBBoxV2:
             mask = resize_lanczos(mask, W_src, H_src, "mask")
 
         # -- bbox -------------------------------------------------------------
-        if context == "full_image":
-            x, y, width, height = 0, 0, W_src, H_src
-        else:
-            nz = torch.nonzero(mask > 0)
-            if nz.numel() == 0:
-                print(f"[{LOG}] WARNING : mask vide -> bbox = image entiere")
-                x, y, width, height = 0, 0, W_src, H_src
-            else:
-                y_idx, x_idx = nz[:, 1], nz[:, 2]
-                x1 = max(0, int(x_idx.min()) - padding)
-                x2 = min(W_src, int(x_idx.max()) + 1 + padding)
-                y1 = max(0, int(y_idx.min()) - padding)
-                y2 = min(H_src, int(y_idx.max()) + 1 + padding)
-                x, y, width, height = x1, y1, x2 - x1, y2 - y1
+        x, y, width, height = mask_bbox(mask, padding, context)
 
         # -- geometrie ----------------------------------------------------------
         c = compute_crop_v2(x, y, width, height, W_src, H_src, multiple, resolution,
