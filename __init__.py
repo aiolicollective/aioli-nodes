@@ -31,7 +31,7 @@ NODE_CLASS_MAPPINGS = {
 
 NODE_DISPLAY_NAME_MAPPINGS = {
     "RatioOutpaintCalc":        "🖼️ Ratio Outpaint Calc",
-    "AioliMaskBBoxV2":          "📐 Aioli Mask BBox V2",
+    "AioliMaskBBoxV2":          "📐 Aioli Mask BBox",
     "InpaintColorFix":          "🎨 Inpaint Color Fix",
     "BBoxMultipleAssembler":    "🧩 BBox Multiple Assembler",
     "RegionalMaskConditioning": "🗺️ Regional Mask Conditioning",

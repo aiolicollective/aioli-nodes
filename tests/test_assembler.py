@@ -96,3 +96,30 @@ def test_batch_equals_separate_runs():
                                                masks, xs, ys, ws, hs, **kw)
         for t_full, t_one in zip(full, one):
             assert torch.equal(t_full[b], t_one[0])
+
+
+@pytest.mark.parametrize("adj, fea", [(0, 8), (6, 8), (0, 5), (-8, 8), (20, 30), (0, 0)])
+def test_feather_goes_outside(adj, fea):
+    """
+    Fondu vers l'exterieur : alpha = 1 dans tout le masque (apres mask_adjust),
+    fondu dehors, 0 au-dela de mask_adjust + feather + 1 (distance Chebyshev).
+    mask_adjust = -feather : rien hors du trait dessine.
+    """
+    from scipy import ndimage
+    H, W = 200, 260
+    m = torch.zeros(1, 120, 140)
+    m[:, 30:90, 40:100] = 1.0
+    base = torch.rand(1, H, W, 3)
+    _, comb, _ = BBoxMultipleAssembler().assemble(
+        [base], [torch.rand(1, 120, 140, 3)], [m], [50], [40], [140], [120],
+        order=["list_first_on_top"], mask_adjust=[adj], feather=[fea], opacity=[1.0])
+    a = comb[0].numpy()
+    drawn = (torch.zeros(H, W).index_put_((torch.arange(70, 130).repeat_interleave(60),
+                                            torch.arange(90, 150).repeat(60)), torch.tensor(1.0)) > 0).numpy()
+    inside = ndimage.distance_transform_cdt(drawn, metric="chessboard")       # profondeur dans le trait
+    outside = ndimage.distance_transform_cdt(~drawn, metric="chessboard")     # distance hors du trait
+    if adj >= 0:
+        assert a[drawn].min() == 1.0                                          # 100 % dans le trait
+    assert a[outside > max(0, adj) + fea + 1].max() == 0.0
+    if adj == -fea:
+        assert a[~drawn].max() == 0.0                                         # rien hors du trait

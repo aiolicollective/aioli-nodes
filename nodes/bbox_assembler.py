@@ -101,6 +101,24 @@ def _feather_fast(mask_hw, px):
     return m.squeeze(0).squeeze(0).clamp(0.0, 1.0)
 
 
+def _feather_split(mask_adjust, feather):
+    """
+    Fondu VERS L'EXTERIEUR (v1.8). Le masque est d'abord grossi de r puis
+    adouci d'un flou boite de rayon r, r = ceil(feather / 2) : alpha = 1 partout
+    dans le masque (apres mask_adjust), fondu sur ~feather px dehors, 0 au-dela.
+    Avant v1.8 : fondu centre sur le bord (moitie dedans, ~50 % au bord).
+    Renvoie (grow, rayon du flou).
+    """
+    r = (int(feather) + 1) // 2
+    return int(mask_adjust) + r, r
+
+
+def alpha_from_mask(mask_hw, mask_adjust, feather):
+    """Alpha d'un calque (sans l'opacite). Partage avec Region Preview."""
+    grow, r = _feather_split(mask_adjust, feather)
+    return _feather_fast(_grow_shrink_fast(mask_hw, grow), r)
+
+
 class BBoxMultipleAssembler:
     """
     Recompose pixel-perfect d'une LISTE de crops sur une seule image de base.
@@ -137,6 +155,10 @@ class BBoxMultipleAssembler:
         ET masque). Le gris des bandes ne deborde plus dans l'image (liseres) et
         le masque reste plein jusqu'au bord. Sans bande : inchange.
       * Arrondi au plus proche avant PIL (avant : troncature, -0,5 niveau).
+      * feather = fondu VERS L'EXTERIEUR du masque (apres mask_adjust) : le
+        masque reste a 100 % jusqu'a son bord, fondu sur ~feather px dehors.
+        Avant : fondu centre sur le bord (~50 % au bord du masque). Pour ne
+        rien toucher hors du trait dessine : mask_adjust = -feather.
       * Grow / feather calcules sur le rectangle du crop elargi de la portee
         (au lieu de toute la toile) : meme resultat au bit pres, bien plus
         rapide. Au-dela de 24 px (chemin sous-echantillonne), toute la toile,
@@ -164,7 +186,9 @@ class BBoxMultipleAssembler:
             "optional": {
                 "order":       (["list_first_on_top", "area_large_under"],),
                 "mask_adjust": ("INT",   {"default": 0,   "min": -512, "max": 512}),
-                "feather":     ("INT",   {"default": 8,   "min": 0, "max": 512}),
+                "feather":     ("INT",   {"default": 8,   "min": 0, "max": 512,
+                                          "tooltip": "Largeur du fondu (px), vers l'exterieur du masque "
+                                                     "(apres mask_adjust). Le masque reste a 100 % dedans."}),
                 "opacity":     ("FLOAT", {"default": 1.0, "min": 0.0, "max": 1.0, "step": 0.01}),
             },
         }
@@ -188,16 +212,16 @@ class BBoxMultipleAssembler:
         des deux cotes). Teste dans tests/test_assembler.py.
         """
         r_max = cls._WINDOW_MAX_RADIUS
-        if cls._use_window and abs(mask_adjust) <= r_max and feather <= r_max:
-            M = max(0, mask_adjust) + feather + 2
+        grow, r = _feather_split(mask_adjust, feather)
+        if cls._use_window and abs(grow) <= r_max and r <= r_max:
+            M = max(0, grow) + r + 2
             ox, oy = max(0, x0 - M), max(0, y0 - M)
             ex, ey = min(W, x1 + M), min(H, y1 + M)
         else:
             ox, oy, ex, ey = 0, 0, W, H
         full_mask = torch.zeros((ey - oy, ex - ox), dtype=torch.float32)
         full_mask[y0 - oy:y1 - oy, x0 - ox:x1 - ox] = m[cy0:cy0 + (y1 - y0), cx0:cx0 + (x1 - x0)]
-        full_mask = _grow_shrink_fast(full_mask, mask_adjust)
-        alpha = _feather_fast(full_mask, feather) * opacity
+        alpha = alpha_from_mask(full_mask, mask_adjust, feather) * opacity
         return alpha, ox, oy
 
     def assemble(self, base_image, crops, masks, x, y, width, height,

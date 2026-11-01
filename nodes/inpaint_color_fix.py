@@ -31,7 +31,7 @@ class InpaintColorFix:
       mask (opt.)       → MASK override : bypass Delta-E, contrôle direct
       measure_area (opt.) → MASK zone de mesure (v1.7.0) : seuls ces pixels
                           entrent dans les statistiques (seuil auto, mean/std).
-                          À brancher sur image_area d'Aioli Mask BBox V2 : le
+                          À brancher sur image_area d'Aioli Mask BBox : le
                           gris des bandes n'est plus mesuré (il faussait la
                           correction). Sans lui : tout le crop, comme avant.
 

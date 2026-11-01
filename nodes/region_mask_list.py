@@ -25,7 +25,7 @@ class RegionMaskList:
                    retires ; s'il ne reste aucune region, la liste devient UN
                    masque plein : pas de masque = toute l'image est editee.
 
-    Cette meme liste alimente : AioliMaskBBox V2 (bbox + crop + coords par region),
+    Cette meme liste alimente : Aioli Mask BBox (bbox + crop + coords par region),
     Gemma (caption par region), le KSampler (N passes) ET le conditionnement
     regional mode B. Le fond y est donc lui aussi captionne et enhance.
 

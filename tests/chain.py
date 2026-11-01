@@ -306,7 +306,8 @@ def measure(run):
     # deux Lanczos (aller a l'echelle modele, retour a l'echelle crop) : 3 px de
     # chaque cote de l'echelle la plus grossiere, +1 d'arrondi
     fringe = 3 + math.ceil(3 * factor) + 1 + math.ceil(max(0, adj) / 24) + math.ceil(fea / 24)
-    reach = max(0, adj) + fea + fringe
+    # fondu vers l'exterieur (v1.8) : grow ceil(f/2) + flou ceil(f/2) -> <= f + 1
+    reach = max(0, adj) + fea + 1 + fringe
     if union.any():
         dist = ndimage.distance_transform_cdt(~union, metric="chessboard")
         spill = float(dist[changed].max()) if changed.any() else 0.0
