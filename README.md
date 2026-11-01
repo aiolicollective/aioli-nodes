@@ -1,10 +1,12 @@
 # Aioli Nodes — ComfyUI Custom Node Suite
 
-Eight nodes for outpainting, inpainting and **multi-region** (SAM3 or hand-drawn) editing in ComfyUI — plus ready-to-run example workflows, including three that work out-of-the-box on **ComfyUI Cloud** (no install required).
+Nodes for outpainting, inpainting and **multi-region** (SAM3 or hand-drawn) editing in ComfyUI, with one promise: **zero pixel shift and zero colour drift on everything that is not regenerated** — plus a **📏 Resolution Panel** that shows, live, how the image is scaled, padded and cropped, and ready-to-run example workflows, including three that work out-of-the-box on **ComfyUI Cloud** (no install required).
 
-> **1.7.1 —** **🖼️ Ratio Outpaint Calc** can pad a drawn mask exactly like the image (`mask` → `mask_padded`), and **🧱 Region Mask List** can add the outpaint bands as one more region (`extra_mask`) and turn "no region" into the whole image (`empty = full_image`). Outpaint and inpaint now run in the same pass. Fix: when rounding to `multiple` made the padded image *smaller* than the source on one side (a crop of a few pixels), the band `mask` was wrong — it now follows the image exactly. Prefer `multiple = none` when Aioli Mask BBox V2 handles the multiples downstream: it only ever enlarges.
+> **1.8.0 —** New **📏 Resolution Panel**: set the sizing of the chain and see it to scale, live, before running (legacy canvas and Nodes 2.0). **🧩 BBox Multiple Assembler** / **👁 Region Preview**: `feather` now fades **outward** from the mask — the mask stays at 100 % up to its edge, and `mask_adjust = −feather` touches nothing outside the drawn stroke. **📐 Aioli Mask BBox** (key `AioliMaskBBoxV2` unchanged, no longer displayed "V2"): no more grey fringe at the image border when the crop has bands and is resized, and the mask stays full up to the image border. Batches > 1 are processed image by image (only the first image came out before). Rounding instead of truncation before every Lanczos resize (a −0.5 level bias in pasted zones is gone). Assembler 2–6× faster. Legacy nodes render bit-identically to 1.7.1. **Visible changes on existing workflows:** the feather (now outward), the image border when the crop has bands, ≤ 1 level from rounding. MIT licence file added; tests in `tests/`.
+
+> **1.7.1 —** **🖼️ Ratio Outpaint Calc** can pad a drawn mask exactly like the image (`mask` → `mask_padded`), and **🧱 Region Mask List** can add the outpaint bands as one more region (`extra_mask`) and turn "no region" into the whole image (`empty = full_image`). Outpaint and inpaint now run in the same pass. Fix: when rounding to `multiple` made the padded image *smaller* than the source on one side (a crop of a few pixels), the band `mask` was wrong — it now follows the image exactly. Prefer `multiple = none` when Aioli Mask BBox handles the multiples downstream: it only ever enlarges.
 >
-> **1.7.0 —** New **📐 Aioli Mask BBox V2**: one geometry rule for regions, borders and whole images — the crop never cuts the bbox and is never stretched, grey bands fill in when the image is too small, and `resolution` is a pixel budget (square equivalent). **🧩 BBox Multiple Assembler** feather no longer lets the original back in at the image border. **✂️ Mask Split Regions** can turn an empty mask into the whole image, **🎨 Inpaint Color Fix** can ignore the bands. Existing workflows keep loading: the 1.6 node stays registered as *Aioli Mask BBox (legacy)*. The only visible change on old workflows is the feather at the image border (see [BBox Multiple Assembler](#-bbox-multiple-assembler)). See [Migrating from Aioli Mask BBox (legacy)](#migrating-from--aioli-mask-bbox-legacy).
+> **1.7.0 —** New **📐 Aioli Mask BBox V2** (displayed **📐 Aioli Mask BBox** since 1.8.0, same key `AioliMaskBBoxV2`): one geometry rule for regions, borders and whole images — the crop never cuts the bbox and is never stretched, grey bands fill in when the image is too small, and `resolution` is a pixel budget (square equivalent). **🧩 BBox Multiple Assembler** feather no longer lets the original back in at the image border. **✂️ Mask Split Regions** can turn an empty mask into the whole image, **🎨 Inpaint Color Fix** can ignore the bands. Existing workflows keep loading: the 1.6 node stays registered as *Aioli Mask BBox (legacy)*. The only visible change on old workflows is the feather at the image border (see [BBox Multiple Assembler](#-bbox-multiple-assembler)). See [Migrating from Aioli Mask BBox (legacy)](#migrating-from--aioli-mask-bbox-legacy).
 >
 > **1.6.0 —** `MaskBoundingBox+` (ComfyUI Essentials) and `BBox Multiple Fix` merged into a single node, now itself legacy.
 
@@ -17,7 +19,7 @@ All workflows in this repo use the same core idea: **inpaint only the masked reg
 - **The source image's dimensions are preserved end-to-end.** Only the crop around the mask goes through the model / KSampler — so the full-resolution original never gets downscaled, stretched, or otherwise degraded to fit a generation budget.
 - **More detail inside the masked region.** Since only the crop is generated, the model's entire budget (attention, denoising steps, resolution) is spent on that zone — not diluted across background pixels that aren't changing.
 - **`force_square` avoids internal recrops.** Most image-edit models (nano-banana, Flux, Qwen-Edit, SDXL inpaint) quietly recrop or letterbox any non-1:1 input. Forcing the crop to be square before sending prevents this "pixel shift", keeping the output pixel-aligned with the source. When the square doesn't fit in the image, grey bands fill in — the crop is never stretched.
-- **One path for everything.** Region, region with the whole image as context, whole image, outpaint: the same chain (Aioli Mask BBox V2 → model → BBox Multiple Assembler) — what it does follows from what you give it.
+- **One path for everything.** Region, region with the whole image as context, whole image, outpaint: the same chain (Aioli Mask BBox → model → BBox Multiple Assembler) — what it does follows from what you give it.
 - **Pixel-perfect recompose.** After generation, the result is stitched back onto the untouched source at the exact original coordinates — no drift, no seams, no colour shift at the mask edges.
 
 ---
@@ -72,14 +74,16 @@ Load Image → 🖼️ Ratio Outpaint Calc → VAE Encode (Inpaint) → KSampler
 **Outpaint + inpaint in the same run** (1.7.1)
 ```
 Load Image (image + mask) → 🖼️ Ratio Outpaint Calc
-  ├── image_padded  → base image for 📐 Aioli Mask BBox V2 and 🧩 BBox Multiple Assembler
+  ├── image_padded  → base image for 📐 Aioli Mask BBox and 🧩 BBox Multiple Assembler
   ├── mask_padded   → ✂️ Mask Split Regions → 🧱 Region Mask List (masks)
   └── mask (bands)  ─────────────────────────→ 🧱 Region Mask List (extra_mask)
 ```
 
 ---
 
-## 📐 Aioli Mask BBox V2
+## 📐 Aioli Mask BBox
+
+*Key `AioliMaskBBoxV2` (displayed "V2" in 1.7.x). Not to be confused with the 1.6 node, kept as **📐 Aioli Mask BBox (legacy)**.*
 
 Takes the source image + mask, **finds the bbox itself** and returns the crop to send to the model — at a size the model likes, with **one geometry rule** for every case: a small masked region, a large one, a region touching the border, or the whole image.
 
@@ -152,7 +156,7 @@ N² is reached by the pair of multiples closest to the crop's ratio, within ±5 
 **Workflow**
 ```
 ✂️ Mask Split Regions / 🧱 Region Mask List
-  └→ 📐 Aioli Mask BBox V2 ── image_cropped → model → 🎨 Inpaint Color Fix ← image_area
+  └→ 📐 Aioli Mask BBox ── image_cropped → model → 🎨 Inpaint Color Fix ← image_area
         │                                                   │
         └── x, y, orig_width, orig_height ──→ 🧩 BBox Multiple Assembler
 ```
@@ -163,13 +167,13 @@ N² is reached by the pair of multiples closest to the crop's ratio, within ±5 
 
 To migrate a workflow:
 
-1. Replace it with **📐 Aioli Mask BBox V2**, connect `image` and `mask`.
+1. Replace it with **📐 Aioli Mask BBox**, connect `image` and `mask`.
 2. Reconnect the nine outputs — same names, same order.
 3. Set `resolution` to the old `target` value (`none` → `0`). It now counts pixels, not the long side: a 3:2 crop at `1024` becomes 1248×832 instead of 1024×688.
 4. Recompose with **🧩 BBox Multiple Assembler** (`orig_width` / `orig_height` → `width` / `height`). Drop any `ImageResize+` in stretch mode and `ImageCompositeMasked` — the assembler resizes the crop back itself.
 5. Optional: wire `image_area` into **🎨 Inpaint Color Fix** `measure_area`.
 
-Why a new node rather than an update: changing `target` from a dropdown to an INT would break every saved workflow (`"none"` can't be read as a number), and the old node could, without `force_square`, **cut the bbox** (crop smaller than the bbox when a target was set) or **leave strips of the original** on whole-image crops. V2 fixes both by construction.
+Why a new node rather than an update: changing `target` from a dropdown to an INT would break every saved workflow (`"none"` can't be read as a number), and the old node could, without `force_square`, **cut the bbox** (crop smaller than the bbox when a target was set) or **leave strips of the original** on whole-image crops. The new node fixes both by construction.
 
 <details>
 <summary>Legacy 📐 Aioli Mask BBox (1.6) — reference</summary>
@@ -188,7 +192,48 @@ Outputs: `image_cropped`, `mask_cropped`, `x`, `y`, `orig_width`, `orig_height`,
 
 ### Migrating from 📐 BBox Multiple Fix
 
-`BBoxMultipleFix` (1.5) is also still registered, same key, same inputs and outputs: old workflows keep running unchanged. To migrate, replace the pair `MaskBoundingBox+` (ComfyUI Essentials, [maintenance-only since April 2025](https://github.com/cubiq/ComfyUI_essentials#readme)) → `BBox Multiple Fix` by one **📐 Aioli Mask BBox V2** and follow the steps above. If `MaskBoundingBox+` had `blur > 0`, carry that value over to `padding` — blur only widened the bbox.
+`BBoxMultipleFix` (1.5) is also still registered, same key, same inputs and outputs: old workflows keep running unchanged. To migrate, replace the pair `MaskBoundingBox+` (ComfyUI Essentials, [maintenance-only since April 2025](https://github.com/cubiq/ComfyUI_essentials#readme)) → `BBox Multiple Fix` by one **📐 Aioli Mask BBox** and follow the steps above. If `MaskBoundingBox+` had `blur > 0`, carry that value over to `padding` — blur only widened the bbox.
+
+---
+
+## 📏 Resolution Panel
+
+Sets **and shows** how the inpaint / outpaint chain sizes your image — to scale, live, before any run.
+
+It carries the sizing settings of the chain, outputs them for the inputs of the inpaint subgraph, and draws the whole chain on the node:
+
+- source → × OUTPUT SCALE → outpaint canvas (generated bands hatched),
+- per region: bbox (solid), crop (dashed), bands of the crop (hatched), model size, up / downscale,
+- warnings: the original covers less than 45 % of the outpaint canvas · a crop shrunk more than ×2 for the model (a 1 px slide of the model then becomes ×k px in the result) · 25 % or more of grey bands in a crop.
+
+Before a run, the diagram follows the settings as you change them (regions from the drawn mask, i.e. the LoadImage alpha — SAM3 / LLM regions are only known at run time). After a run, it shows the exact values of that run. The numbers come from **the same Python functions as the chain**, not a copy (tested against it in `tests/test_resolution_plan.py`). Text output `report` for **PreviewAny**.
+
+**Two settings that are easy to mix up**
+- **OUTPUT SCALE** sets the size of the final image (source × scale). It never changes how much the model works.
+- **MODEL SIZE** is the model's working size per region, as a **square equivalent**: `1024` = as many pixels as 1024 × 1024 (≈ 1 MP), whatever the ratio of the crop. A smaller crop is enlarged to it. A larger crop is shrunk to it only if **SHRINK BIG CROPS** is on — otherwise it keeps its native size, capped at 2048² (4.2 MP).
+- Whole-image edit: raising OUTPUT SCALE without raising MODEL SIZE (or turning SHRINK BIG CROPS off) makes the model's slips bigger in the result.
+
+**Inputs** (outputs: the same values, same names, plus `report`)
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| image *(optional)* | IMAGE | Source image (LoadImage) — its size drives the diagram |
+| mask *(optional)* | MASK | Drawn mask (MASK output of the same LoadImage) — regions of the diagram |
+| OUTPUT SCALE | FLOAT | Factor on the source before anything. Default `1.0` |
+| OUTPAINT RATIO | dropdown | `none` · `1:1` · `4:5` · `5:4` · `3:4` · `4:3` · `16:9` · `9:16` |
+| REGENERATE WHOLE IMAGE | BOOLEAN | Adds the whole image as one more region |
+| MODEL SIZE | INT | Model size per region, square equivalent (see above). `0` = native size. Default `1024` |
+| multiple | dropdown | Model-side sides are multiples of it. Default `16 (Flux)` |
+| SQUARE | BOOLEAN | Square model size (grey bands when the square doesn't fit) |
+| SHRINK BIG CROPS | BOOLEAN | A crop larger than MODEL SIZE² is shrunk to it. Default on |
+| padding | INT | Margin around each region's bbox, in pixels. Default `48` |
+| CONTEXT | dropdown | `region` · `full_image` |
+
+**Wiring**
+```
+LoadImage ──image / mask──→ 📏 Resolution Panel ──OUTPUT SCALE, OUTPAINT RATIO, … (9 outputs)──→ inputs of the inpaint subgraph
+```
+
+Works in the **legacy canvas and Nodes 2.0**: the diagram is a DOM widget (an HTML canvas + text), nothing is drawn in `onDrawForeground` (which Nodes 2.0 never calls). Readable JS in `web/`, no build step, no external library; the preview calls the server route `/aioli/resolution_plan` (read-only, files of ComfyUI's input / output / temp folders only). If a future frontend breaks the JS, only the diagram disappears: the node keeps passing its values and its `report`. Needs the V3 node API (`comfy_api.latest`, tested on ComfyUI 0.43.2 / frontend 1.57.4); without it the panel is skipped and the rest of the pack loads.
 
 ---
 
@@ -201,13 +246,13 @@ Corrects colorimetric drift introduced by the generation — selectively applies
 **Inputs**
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| original_crop | IMAGE | `image_cropped` from 📐 Aioli Mask BBox V2 (before KSampler) |
+| original_crop | IMAGE | `image_cropped` from 📐 Aioli Mask BBox (before KSampler) |
 | inpainted_crop | IMAGE | IMAGE from VAE Decode |
 | delta_e_threshold | FLOAT | Similarity threshold (-1 = auto). Below = corrected, above = creative/intact |
 | blend_strength | FLOAT | Color match strength on similar zones (0 = none, 1 = full) |
 | feather_radius | INT | Gaussian blur radius on the correction mask (0 = disabled) |
 | mask *(optional)* | MASK | Override mode: bypasses Delta-E entirely, the mask drives correction directly |
-| measure_area *(optional)* | MASK | Pixels used for the statistics (auto threshold, colour match). Connect `image_area` from 📐 Aioli Mask BBox V2 so the grey bands don't skew the correction. Unconnected: the whole crop, as before |
+| measure_area *(optional)* | MASK | Pixels used for the statistics (auto threshold, colour match). Connect `image_area` from 📐 Aioli Mask BBox so the grey bands don't skew the correction. Unconnected: the whole crop, as before |
 
 **Outputs**
 | Output | Type | Description |
@@ -234,7 +279,7 @@ Corrects colorimetric drift introduced by the generation — selectively applies
 
 **Position in workflow**
 ```
-📐 Aioli Mask BBox V2
+📐 Aioli Mask BBox
   ├── image_cropped → KSampler → VAEDecode → 🎨 InpaintColorFix → 🧩 BBox Multiple Assembler
   └── image_area ─────────────────────────────────↑ (measure_area)
 ```
@@ -254,10 +299,10 @@ Multi-region recompose — the list-aware successor to `ImageCompositeMasked`. S
 | crops | IMAGE (list) | The N enhanced crops |
 | masks | MASK (list) | The N per-region masks |
 | x / y | INT (list) | Top-left of each crop in the source — negative values are fine (bands) |
-| width / height | INT (list) | Size of each crop in the source → `orig_width` / `orig_height` of 📐 Aioli Mask BBox V2. Crops at another size are resized back (Lanczos) |
+| width / height | INT (list) | Size of each crop in the source → `orig_width` / `orig_height` of 📐 Aioli Mask BBox. Crops at another size are resized back (Lanczos) |
 | order | dropdown | `list_first_on_top` (last list item = bottom layer → put the background mask last) · `area_large_under` (large zones under, auto) |
 | mask_adjust | INT | Grow (+) / shrink (−) each mask on the full canvas. Default `0` |
-| feather | INT | Gaussian edge softening. Default `8` |
+| feather | INT | Fade width in pixels, **outward** from the mask (after `mask_adjust`): 100 % inside the mask up to its edge, 0 beyond `mask_adjust + feather`. Default `8` |
 | opacity | FLOAT | Per-layer opacity. Default `1.0` |
 
 **Outputs**
@@ -271,13 +316,15 @@ Multi-region recompose — the list-aware successor to `ImageCompositeMasked`. S
 
 > Proven byte-identical to `ImageCompositeMasked` for a single region with `feather = 0, mask_adjust = 0`.
 
+> **1.8.0 — outward feather.** Up to 1.7.1 the fade was centred on the mask edge (~50 % model / 50 % original right on the drawn stroke). It now happens entirely outside: the drawn (and adjusted) mask is fully regenerated, the fade blends into the surroundings. Nothing is changed beyond `mask_adjust + feather` px. To touch nothing outside the drawn stroke, set `mask_adjust = −feather`. Keep `padding` (📐 Aioli Mask BBox) ≥ `mask_adjust + feather`, or the fade is cut at the edge of the crop. Also in 1.8.0: batches > 1 (each image recomposed on its own base), crops with bands (the band content is replaced by the image edge before resizing back — no grey fringe), RGBA bases (alpha kept), and grow / feather computed on the crop rectangle instead of the whole canvas (same result bit for bit, faster).
+
 > **1.7.0 — feather at the image border.** The feather used to treat everything outside the image as black: a mask touching the border dropped to ~0.53 there (~0.28 in a corner, feather 8) and the original came back along the edge. The border now extends the mask as it is: a mask touching the border stays at 1, a mask stopping short of it is not pushed up. Old workflows render differently **at the image border only** — an improvement. **👁 Region Preview** follows (same function).
 
 ---
 
 ## 👁 Region Preview
 
-Preview — **before any generation** — exactly what **BBox Multiple Assembler** only outputs at the very end. Branch it as a **side-channel** right after **Region Mask List** or **Mask Split Regions**; it never touches the list pipeline that already works. It reuses the assembler's **exact math** (the same imported `_grow_shrink_fast` / `_feather_fast` / `_resize_mask` / `_PALETTE` helpers), so **the preview equals the final render**.
+Preview — **before any generation** — exactly what **BBox Multiple Assembler** only outputs at the very end. Branch it as a **side-channel** right after **Region Mask List** or **Mask Split Regions**; it never touches the list pipeline that already works. It reuses the assembler's **exact math** (the same imported `alpha_from_mask` / `_resize_mask` / `_PALETTE` helpers), so **the preview equals the final render**.
 
 It also doubles as a **single tuning point**: set `mask_adjust` / `feather` / `opacity` here, look at the result, then wire those same outputs straight back into **BBox Multiple Assembler** (convert its widgets to inputs). `INPUT_IS_LIST` — maps over the mask list like the assembler; singletons taken at `[0]`.
 
@@ -289,7 +336,7 @@ Masks are full-size (the usual output of Region Mask List / Mask Split Regions, 
 | base_image | IMAGE | The base image to preview the regions on |
 | masks | MASK (list) | The regional masks (full-size) |
 | mask_adjust | INT | Grow (+) / shrink (−) each mask on the full canvas. Default `0` |
-| feather | INT | Gaussian edge softening. Default `8` |
+| feather | INT | Fade width in pixels, outward from the mask — same rule as the assembler. Default `8` |
 | opacity | FLOAT | Per-layer opacity. Default `1.0` |
 
 **Outputs**
@@ -315,7 +362,7 @@ Region Mask List ──┬─→ … per-region crop → KSampler → BBox Multi
 
 Prepares the **list of regional masks** for a SAM3 multi-region pipeline. Takes the N SAM3 masks (batch *or* list), flattens them into a clean full-size list in the received order, and optionally appends a **background mask** (the inverse of the union of all masks) as the **last** element. `INPUT_IS_LIST` · `OUTPUT_IS_LIST = (True, False, False)`.
 
-The last element being the background pairs with **BBox Multiple Assembler**'s `list_first_on_top` ordering (last = bottom layer), so the background stays under the objects. The same list feeds **📐 Aioli Mask BBox V2** (per-region crop + coords), the per-region Gemma caption, the KSampler (N passes) and **Regional Mask Conditioning**.
+The last element being the background pairs with **BBox Multiple Assembler**'s `list_first_on_top` ordering (last = bottom layer), so the background stays under the objects. The same list feeds **📐 Aioli Mask BBox** (per-region crop + coords), the per-region Gemma caption, the KSampler (N passes) and **Regional Mask Conditioning**.
 
 **Inputs**
 | Parameter | Type | Description |
@@ -364,7 +411,7 @@ Folds a **list of (conditioning, mask)** pairs into a **single regional conditio
 
 ## ✂️ Mask Split Regions
 
-Splits **one hand-drawn mask** into **N separate masks**, one per disconnected blob (connected-component labelling). Each painted region then gets its own bbox / crop / prompt — manual multi-region inpaint, exactly like SAM3 but **keyword-free**. A single connected blob → 1 mask (identical to a normal single-region inpaint). Output is a **list**, so it drops straight into **📐 Aioli Mask BBox V2**, which maps over it. Uses `scipy.ndimage` — already bundled with ComfyUI, no install. `OUTPUT_IS_LIST = (True, False)`.
+Splits **one hand-drawn mask** into **N separate masks**, one per disconnected blob (connected-component labelling). Each painted region then gets its own bbox / crop / prompt — manual multi-region inpaint, exactly like SAM3 but **keyword-free**. A single connected blob → 1 mask (identical to a normal single-region inpaint). Output is a **list**, so it drops straight into **📐 Aioli Mask BBox**, which maps over it. Uses `scipy.ndimage` — already bundled with ComfyUI, no install. `OUTPUT_IS_LIST = (True, False)`.
 
 **Inputs**
 | Parameter | Type | Description |
@@ -383,7 +430,7 @@ Splits **one hand-drawn mask** into **N separate masks**, one per disconnected b
 
 **Position in workflow (manual branch)**
 ```
-ImageToMask → ✂️ Mask Split Regions → 📐 Aioli Mask BBox V2 → … per-region inpaint
+ImageToMask → ✂️ Mask Split Regions → 📐 Aioli Mask BBox → … per-region inpaint
 ```
 
 > **Only four widgets are exposed** — `threshold`, `min_area`, `sort_by`, `empty_mask`. Two parameters are kept as fixed defaults in the node code to keep the canvas clean: `connectivity = 8` (diagonals count — correct for virtually all hand-drawn masks) and `merge_distance = 0` (no stroke merging). Edit `mask_split_regions.py` if you ever need to change them.
@@ -489,13 +536,26 @@ Load Image (+ SAM3 masks  OR  hand-drawn mask → ✂️ Mask Split Regions)
 | Text encoder | `qwen_3_8b_fp8mixed.safetensors` |
 
 **Aioli nodes showcased**
-`MaskSplitRegions` · `RegionMaskList` · `AioliMaskBBox` · `InpaintColorFix` · `BBoxMultipleAssembler` · `RegionPreview` — plus **ComfyUI Essentials** (`ImageResize+`) and **ComfyUI KJNodes** (`GrowMaskWithBlur`). *(The published JSON still wires `MaskBoundingBox+` → `BBoxMultipleFix`; both still work — see [Migrating from BBox Multiple Fix](#migrating-from--bbox-multiple-fix). New examples built on Aioli Mask BBox V2 are coming.)*
+`MaskSplitRegions` · `RegionMaskList` · `AioliMaskBBox` · `InpaintColorFix` · `BBoxMultipleAssembler` · `RegionPreview` — plus **ComfyUI Essentials** (`ImageResize+`) and **ComfyUI KJNodes** (`GrowMaskWithBlur`). *(The published JSON still wires `MaskBoundingBox+` → `BBoxMultipleFix`; both still work — see [Migrating from BBox Multiple Fix](#migrating-from--bbox-multiple-fix). New examples built on Aioli Mask BBox are coming.)*
 
 **Usage**
 1. Download the JSON and drag it into ComfyUI
 2. Provide your image and either SAM3 masks or a hand-drawn mask (split automatically into regions)
 3. Give each region its own prompt
 4. Run — every region is enhanced on its own and recomposed pixel-perfectly onto the source
+
+---
+
+## 🧪 Tests
+
+`tests/` simulates the whole chain outside ComfyUI with a fake model (identity, slide, zoom) — checked pixel-identical to a real ComfyUI run — and verifies the promise on hundreds of random configurations: 0 pixel changed outside the combined mask, nothing beyond `mask_adjust + feather`, no colour drift (< 1 level) in pasted zones, legacy nodes bit-identical to 1.7.1, Resolution Panel = chain.
+
+```
+python -m pytest tests/                                   # with ComfyUI's Python (~4 min CPU)
+AIOLI_CHAIN_N=400 AIOLI_GEOM_N=300000 python -m pytest tests/   # long run
+python tests/chain.py --shift                             # how a model slide shows up in the result
+python tests/browser/check_panel.py                       # panel in legacy + Nodes 2.0 (running ComfyUI + Playwright)
+```
 
 ---
 
@@ -508,3 +568,5 @@ If this saved you time or inspired something, a ⭐ on the repo goes a long way.
 🌐 [aiolicollective.com](https://aiolicollective.com/) · 📷 [@aioli.collective](https://www.instagram.com/aioli.collective/)
 
 Feedback, bug reports, and pull requests are always welcome via [GitHub Issues](https://github.com/aiolicollective/aioli-nodes/issues).
+
+Licence: MIT — see [`LICENSE`](LICENSE).
