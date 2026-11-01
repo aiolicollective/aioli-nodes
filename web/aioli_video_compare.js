@@ -169,13 +169,17 @@ function setup(node) {
     S.pending.add(k); S.queue.push([c, i, k]);
   }
   function pump() {
+    if (S.backoffUntil && performance.now() < S.backoffUntil) return;   // serveur indisponible
     while (!S.dead && S.inflight < PARALLEL && S.queue.length) {
       const [c, i, k] = S.queue.shift();
       const sid = S.meta.sid;
       S.inflight++;
       fetchBitmap(url(c, i, false))
         .then((bmp) => { if (S.meta && S.meta.sid === sid) { CACHE.put(k, bmp); S.dirty = true; } else bmp.close?.(); })
-        .catch((e) => { if (e instanceof Gone && S.meta && S.meta.sid === sid) expire(); })
+        .catch((e) => {
+          if (e instanceof Gone) { if (S.meta && S.meta.sid === sid) expire(); }
+          else S.backoffUntil = performance.now() + 1000;        // 5xx, reseau : on espace
+        })
         .finally(() => { S.inflight--; S.pending.delete(k); });
     }
   }
@@ -189,14 +193,19 @@ function setup(node) {
       want("a", index("a", tt)); want("b", index("b", tt));
     }
   }
+  // Pleine resolution : une seule paire en vol ; seule la derniere position
+  // compte, et seulement apres 120 ms d'immobilite (pas a pas rapide).
   function wantFull(ia, ib) {
     const tag = `${S.meta.sid}:${ia}:${ib}`;
-    if (S.fullLoading === tag || (S.full.sid === S.meta.sid && S.full.ia === ia && S.full.ib === ib)) return;
-    if (S.fullFail && S.fullFail.tag === tag && performance.now() - S.fullFail.at < 1000) return;   // reessai <= 1/s
+    if (S.full.sid === S.meta.sid && S.full.ia === ia && S.full.ib === ib) return;
+    const now = performance.now();
+    if (S.fullWant !== tag) { S.fullWant = tag; S.fullSince = now; }
+    if (now - S.fullSince < 120 || S.fullLoading) return;
+    if (S.fullFail && S.fullFail.tag === tag && now - S.fullFail.at < 1000) return;   // reessai <= 1/s
     S.fullLoading = tag;
     const sid = S.meta.sid;
     Promise.allSettled([fetchBitmap(url("a", ia, true)), fetchBitmap(url("b", ib, true))]).then(([ra, rb]) => {
-      if (S.fullLoading === tag) S.fullLoading = null;
+      S.fullLoading = null;
       const ok = ra.status === "fulfilled" && rb.status === "fulfilled";
       if (!ok || !S.meta || S.meta.sid !== sid) {
         if (!ok) S.fullFail = { tag, at: performance.now() };
@@ -401,7 +410,7 @@ function setup(node) {
     if (S.meta && S.meta.sid !== meta.sid) CACHE.dropSession(S.meta.sid);
     S.queue = []; S.pending.clear(); S.dead = null;
     S.full.a?.close?.(); S.full.b?.close?.();
-    S.full = { sid: null, ia: -1, ib: -1, a: null, b: null }; S.fullLoading = null;
+    S.full = { sid: null, ia: -1, ib: -1, a: null, b: null }; S.fullLoading = null; S.fullWant = null;
     S.meta = meta; S.t = 0; setPlaying(false);
     S.shown = { ia: -1, ib: -1, full: false }; S.dirty = true;
     warn.innerHTML = (meta.warnings || []).map((w) => `⚠ ${esc(w)}`).join("<br>");

@@ -7,9 +7,12 @@ images pleine resolution sans perte. Widget : web/aioli_video_compare.js.
 
 - Rien n'est garde en memoire : les images sont ecrites une fois (PNG sans perte
   + proxy JPEG) dans le temp de ComfyUI et lues par /view.
-- Une session par node : elle n'est remplacee que quand CE node est relance
-  (un node en cache garde une session valide). Au plus MAX_NODES nodes ; le
-  dossier temp est vide par ComfyUI a chaque demarrage.
+- Le node s'execute a chaque run (not_idempotent) : son widget pointe toujours
+  vers des images qui existent, quel que soit le cache de ComfyUI. Si ses
+  entrees n'ont pas change (meme empreinte), il reutilise instantanement les
+  images deja ecrites. Il garde ses KEEP_PER_NODE dernieres sessions (allers-
+  retours A / B entre reglages) ; au plus MAX_NODES nodes ; le temp est vide
+  par ComfyUI a chaque demarrage.
 - Geometrie d'affichage : la plus grande des deux ; l'autre clip est agrandi a
   l'affichage (ses pixels ne sont pas modifies), et c'est signale.
 - Un fps par clip (IMAGE : fps_a / fps_b ; VIDEO : son propre fps). Le plus
@@ -25,17 +28,41 @@ from collections import OrderedDict
 import folder_paths
 from comfy_api.latest import io
 
-from .video_compare_core import display_geometry, iter_frames, proxy_size, same_clock, write_clip
+from .video_compare_core import (display_geometry, iter_frames, proxy_size, same_clock, signature,
+                                 write_clip)
 
 SUBFOLDER = "aioli_vcmp"
 MAX_NODES = 16
-_SESSIONS = OrderedDict()      # unique_id du node -> dossier de sa derniere session
+KEEP_PER_NODE = 3
+_NODES = OrderedDict()         # unique_id -> liste de sessions [{sid, folder, sig, clips}]
 _LOCK = threading.Lock()
 
 
 def _fps_input(key, label):
     return io.Float.Input(key, default=24.0, min=0.1, max=240.0, step=0.001, display_name=label,
                           tooltip="Frame rate when this side is an IMAGE batch (a VIDEO keeps its own).")
+
+
+def _find(uid, sig):
+    """Session existante de ce node pour ces entrees (dossier encore present)."""
+    with _LOCK:
+        for sess in _NODES.get(uid, []):
+            if sess["sig"] == sig and os.path.isdir(sess["folder"]):
+                return sess
+    return None
+
+
+def _remember(uid, sess):
+    stale = []
+    with _LOCK:
+        lst = [x for x in _NODES.pop(uid, []) if x["sid"] != sess["sid"]]
+        lst.insert(0, sess)
+        stale += [x["folder"] for x in lst[KEEP_PER_NODE:]]
+        _NODES[uid] = lst[:KEEP_PER_NODE]
+        while len(_NODES) > MAX_NODES:
+            stale += [x["folder"] for x in _NODES.popitem(last=False)[1]]
+    for f in stale:                      # suppression hors verrou
+        shutil.rmtree(f, ignore_errors=True)
 
 
 class AioliVideoCompare(io.ComfyNode):
@@ -48,6 +75,7 @@ class AioliVideoCompare(io.ComfyNode):
             description="Compare two clips frame by frame: wipe, side by side, difference, "
                         "toggle, swap; play, scrub, step, zoom on lossless full-resolution frames.",
             is_output_node=True,
+            not_idempotent=True,
             inputs=[
                 io.MultiType.Input("a", types=[io.Image, io.Video], display_name="A"),
                 io.MultiType.Input("b", types=[io.Image, io.Video], display_name="B"),
@@ -62,18 +90,29 @@ class AioliVideoCompare(io.ComfyNode):
 
     @classmethod
     def execute(cls, a, b, fps_a, fps_b, label_a, label_b) -> io.NodeOutput:
-        sid = uuid.uuid4().hex[:12]
-        folder = os.path.join(folder_paths.get_temp_directory(), SUBFOLDER, sid)
-        meta = {}
-        try:
-            for side, value, fps, label in (("a", a, fps_a, label_a), ("b", b, fps_b, label_b)):
-                rate, frames = iter_frames(value, fps)
-                n, w, h = write_clip(frames, folder, side)
-                meta[side] = dict(label=str(label), n=n, fps=rate, w=w, h=h, duration=n / rate)
-        except Exception:
-            shutil.rmtree(folder, ignore_errors=True)
-            raise
-        ma, mb = meta["a"], meta["b"]
+        uid = str(cls.hidden.unique_id) if cls.hidden and cls.hidden.unique_id else "?"
+        sig = (signature(a, fps_a), signature(b, fps_b))
+        sess = _find(uid, sig)
+        reused = sess is not None
+        if not reused:
+            sid = uuid.uuid4().hex[:12]
+            folder = os.path.join(folder_paths.get_temp_directory(), SUBFOLDER, sid)
+            clips = {}
+            try:
+                for side, value, fps in (("a", a, fps_a), ("b", b, fps_b)):
+                    rate, frames = iter_frames(value, fps)
+                    n, w, h = write_clip(frames, folder, side)
+                    clips[side] = dict(n=n, fps=rate, w=w, h=h)
+            except Exception:
+                shutil.rmtree(folder, ignore_errors=True)
+                raise
+            sess = dict(sid=sid, folder=folder, sig=sig, clips=clips)
+        _remember(uid, sess)
+
+        ma = dict(sess["clips"]["a"], label=str(label_a))
+        mb = dict(sess["clips"]["b"], label=str(label_b))
+        for m in (ma, mb):
+            m["duration"] = m["n"] / m["fps"]
         display = display_geometry(ma, mb)
         warnings = []
         for k, m in (("A", ma), ("B", mb)):
@@ -89,21 +128,9 @@ class AioliVideoCompare(io.ComfyNode):
             warnings.append(f"different lengths: A {ma['n']} frames, B {mb['n']} frames "
                             f"(the shorter one holds its last frame)")
 
-        # une session par node : on remplace la sienne ; suppression hors verrou
-        uid = str(cls.hidden.unique_id) if cls.hidden and cls.hidden.unique_id else sid
-        stale = []
-        with _LOCK:
-            old = _SESSIONS.pop(uid, None)
-            if old:
-                stale.append(old)
-            _SESSIONS[uid] = folder
-            while len(_SESSIONS) > MAX_NODES:
-                stale.append(_SESSIONS.popitem(last=False)[1])
-        for f in stale:
-            shutil.rmtree(f, ignore_errors=True)
-
-        out = dict(sid=sid, subfolder=f"{SUBFOLDER}/{sid}", a=ma, b=mb, display=list(display),
-                   proxy=list(proxy_size(*display)), clock=clock, warnings=warnings)
-        print(f"[AioliVideoCompare] A {ma['n']} x {ma['w']}x{ma['h']} @ {ma['fps']:g} fps | "
-              f"B {mb['n']} x {mb['w']}x{mb['h']} @ {mb['fps']:g} fps | {folder}")
+        out = dict(sid=sess["sid"], subfolder=f"{SUBFOLDER}/{sess['sid']}", a=ma, b=mb,
+                   display=list(display), proxy=list(proxy_size(*display)), clock=clock,
+                   warnings=warnings)
+        print(f"[AioliVideoCompare] {'reused' if reused else 'written'}: A {ma['n']} x {ma['w']}x{ma['h']} "
+              f"@ {ma['fps']:g} fps | B {mb['n']} x {mb['w']}x{mb['h']} @ {mb['fps']:g} fps")
         return io.NodeOutput(ui={"aioli_vcompare": [out]})

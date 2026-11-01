@@ -6,8 +6,10 @@ clip, chaque image est ecrite UNE fois dans le dossier temp de ComfyUI :
   - <side>_<i>.jpg      proxy (cote long <= PROXY_SIDE, JPEG q90 4:4:4) : lecture ;
   - <side>_full_<i>.png pleine resolution SANS PERTE (PNG, compression rapide) :
                         pause, pas a pas, zoom, difference.
-Rien n'est garde en memoire apres l'execution. Une VIDEO venant d'un fichier
-est decodee en flux (PyAV, image par image) : jamais tout le clip en float32.
+Rien n'est garde en memoire apres l'execution. Une VIDEO est decodee par
+ComfyUI lui-meme (get_components : trim, recadrage, rotation et conversion de
+couleur identiques a la chaine) ; ce decodage tient le clip en float32 le
+temps de l'ecriture, comme tout node video du coeur.
 
 Pourquoi pas une <video> encodee : le 4:2:0 et la compression lissent le detail
 qu'on veut juger (upscale), le mode difference montrerait le bruit d'encodage, et
@@ -55,49 +57,17 @@ def _rgb8(arr):
 def iter_frames(value, default_fps):
     """
     IMAGE (B, H, W, C) ou VIDEO (comfy_api VideoInput) -> (fps, iterateur d'images
-    uint8 (H, W, 3)). VIDEO d'un fichier : decodage en flux par PyAV ; sinon
-    get_components() (tout en memoire, comme le reste de ComfyUI).
+    uint8 (H, W, 3)). VIDEO : get_components() de ComfyUI (memes images que la
+    chaine : trim, recadrage, rotation, conversion de couleur).
     """
     if isinstance(value, torch.Tensor):
         t = value if value.dim() == 4 else value.unsqueeze(0)
         return float(default_fps), (_rgb8(to_uint8(t[i].detach().cpu().float().numpy()))
                                     for i in range(int(t.shape[0])))
-    src = _file_source(value)
-    if src is not None:
-        import av
-        if hasattr(src, "seek"):
-            src.seek(0)
-        container = av.open(src)
-        stream = container.streams.video[0]
-        fps = _as_fps(stream.average_rate or stream.guessed_rate, default_fps)
-
-        def gen():
-            try:
-                for frame in container.decode(stream):
-                    yield _rgb8(frame.to_ndarray(format="rgb24"))
-            finally:
-                container.close()
-        return fps, gen()
     comp = value.get_components()
     images = comp.images if comp.images.dim() == 4 else comp.images.unsqueeze(0)
     return _as_fps(comp.frame_rate, default_fps), (
         _rgb8(to_uint8(images[i].detach().cpu().float().numpy())) for i in range(int(images.shape[0])))
-
-
-def _file_source(value):
-    """
-    Source a decoder en flux, seulement pour une VIDEO qui EST un fichier sans
-    decoupage (trim) : sinon get_stream_source() ignorerait le trim, ou
-    reencoderait en H.264 (avec perte) une video faite d'images.
-    """
-    if type(value).__name__ != "VideoFromFile":
-        return None
-    try:
-        if tuple(value.get_active_trim_window()) != (0.0, 0.0):
-            return None
-        return value.get_stream_source()
-    except Exception:
-        return None
 
 
 def write_clip(frames, folder, prefix, workers=4):
@@ -146,6 +116,38 @@ def display_geometry(a, b):
     return (a["w"], a["h"]) if a["w"] * a["h"] >= b["w"] * b["h"] else (b["w"], b["h"])
 
 
-def same_clock(fa, fb, rel=1e-3):
-    """Deux fps a moins de 0,1 % l'un de l'autre (29.97 / 30000/1001) : une seule horloge."""
+def same_clock(fa, fb, rel=1e-4):
+    """
+    Deux fps a moins de 0,01 % l'un de l'autre (29.97 saisi / 30000/1001) : une
+    seule horloge. 24 et 23.976 sont deux cadences differentes (0,1 %).
+    """
     return abs(fa - fb) <= rel * max(fa, fb)
+
+
+def signature(value, fps):
+    """
+    Empreinte bon marche d'une entree, pour reutiliser les images deja ecrites
+    quand le node est relance sans changement : forme + echantillon du contenu
+    (IMAGE), ou source, trim, recadrage, taille et nombre d'images (VIDEO).
+    """
+    if isinstance(value, torch.Tensor):
+        t = value.detach()
+        step = max(1, int(t.shape[1]) // 64), max(1, int(t.shape[2]) // 64)
+        sample = t[:, ::step[0], ::step[1]].float()
+        return ("image", tuple(t.shape), str(t.dtype), round(float(sample.sum()), 4),
+                round(float((sample * sample).sum()), 4), float(fps))
+    parts = [type(value).__name__]
+    for getter in ("get_stream_source", "get_active_trim_window", "get_dimensions",
+                   "get_frame_count", "get_frame_rate"):
+        try:
+            v = getattr(value, getter)()
+            parts.append(v if isinstance(v, (str, int, float, tuple)) else str(v))
+        except Exception:
+            parts.append(None)
+    crop = getattr(value, "_VideoFromFile__crop", None)
+    parts.append(str(crop))
+    if isinstance(parts[1], str) and os.path.isfile(parts[1]):
+        parts.append(os.path.getmtime(parts[1]))      # fichier reecrit sous le meme nom
+    if parts[1] is None or not isinstance(parts[1], str):
+        parts.append(id(value))          # pas de fichier : pas de reutilisation sure
+    return tuple(parts)

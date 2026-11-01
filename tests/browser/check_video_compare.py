@@ -4,13 +4,13 @@ puis en Nodes 2.0. Hors pytest (ComfyUI lance avec aioli-nodes + Playwright) :
 
     python tests/browser/check_video_compare.py [--url ...] [--chromium ...] [--shots dossier]
 
-Clips de test ecrits dans input/ : A (48 images, 24 fps), B identique en duree
-(48 images, 24 fps) et B "interpolation x2" (96 images, 48 fps). Le numero
+Clips de test ecrits dans input/ : A et B (48 images, 24 fps), et un couple
+"interpolation x2" (A 28 images a 24 fps, B 56 images a 48 fps). Le numero
 d'image est inscrit en gris dans un carre. Pendant la lecture, le script lit ce
 carre a gauche (A) et a droite (B) dans le canvas : a fps egaux A et B montrent
 la meme image ; en x2, B montre l'image 2a ou 2a+1. Il verifie aussi le pas a
 pas, la pleine resolution sans perte en pause, aucune reponse 404 (pas de
-tempete de requetes) et aucune erreur console. Effets de bord : 3 fichiers dans
+tempete de requetes) et aucune erreur console. Effets de bord : 4 fichiers dans
 input/, des runs (sans modele), le reglage Comfy.VueNodes.Enabled bascule puis
 revient a sa valeur effective.
 """
@@ -26,13 +26,14 @@ import uuid
 
 import numpy as np
 
-CLIPS = {"a": ("aioli_vc_check_a.mp4", 48, 24, 4), "b": ("aioli_vc_check_b.mp4", 48, 24, 4),
-         "x2": ("aioli_vc_check_x2.mp4", 96, 48, 2)}         # nom, images, fps, pas du gris
+# nom, images, fps ; numero d'image i inscrit en gris 20 + 4 i (robuste a +-1 niveau d'encodage)
+CLIPS = {"a": ("aioli_vc_check_a.mp4", 48, 24), "b": ("aioli_vc_check_b.mp4", 48, 24),
+         "a28": ("aioli_vc_check_a28.mp4", 28, 24), "x2": ("aioli_vc_check_x2.mp4", 56, 48)}
 W, H = 640, 360
 
 
 def make_clip(variant):
-    _, N, FPS, STEP = CLIPS[variant]
+    _, N, FPS = CLIPS[variant]
     import av
     buf = io.BytesIO()
     out = av.open(buf, "w", format="mp4")
@@ -44,8 +45,8 @@ def make_clip(variant):
         img = np.zeros((H, W, 3), np.uint8)
         img[..., 0] = (xx + i * 8) % 256
         img[..., 1] = (yy * 2 + i * 4) % 256
-        img[..., 2] = 128 if variant == "a" else 160
-        img[30:110, 30:110, :] = 20 + STEP * i            # numero d'image
+        img[..., 2] = 128 if variant in ("a", "a28") else 160
+        img[30:110, 30:110, :] = 20 + 4 * i               # numero d'image
         for p in st.encode(av.VideoFrame.from_ndarray(img, format="rgb24")):
             out.mux(p)
     for p in st.encode():
@@ -88,8 +89,7 @@ READ = """(id) => {
   const x = (cw / 2 - W * s) / 2, y = (ch - H * s) / 2;
   const g = (px, py) => ctx.getImageData(Math.round(px), Math.round(py), 1, 1).data[1];
   const va = g(x + 70 * s, y + 70 * s), vb = g(cw / 2 + x + 70 * s, y + 70 * s);
-  const stepB = S.meta.b.fps > S.meta.a.fps ? 2 : 4;
-  return { a: Math.round((va - 20) / 4), b: Math.round((vb - 20) / stepB), ia: S.shown.ia, ib: S.shown.ib,
+  return { a: Math.round((va - 20) / 4), b: Math.round((vb - 20) / 4), ia: S.shown.ia, ib: S.shown.ib,
            info: n.widgets.find(w => w.name === "video_compare").element.querySelector(".aioli-vc-info").textContent };
 }"""
 
@@ -133,7 +133,7 @@ def main():
             vue_before = bool(p0.evaluate("() => window.app.extensionManager.setting.get('Comfy.VueNodes.Enabled')"))
             p0.close()
             for mode, vue in (("legacy", False), ("nodes2", True)):
-                for case, clip_b in (("same fps", "b"), ("interpolation x2", "x2")):
+                for case, clip_a, clip_b in (("same fps", "a", "b"), ("interpolation x2", "a28", "x2")):
                     set_vue(vue)
                     page = browser.new_context(viewport={"width": 1400, "height": 950}).new_page()
                     errs, gone = [], []
@@ -146,7 +146,7 @@ def main():
                     page.wait_for_function("() => window.app && window.app.graph", timeout=60000)
                     time.sleep(3)
                     page.keyboard.press("Escape")
-                    vid = page.evaluate(BUILD, [CLIPS["a"][0], CLIPS[clip_b][0]])
+                    vid = page.evaluate(BUILD, [CLIPS[clip_a][0], CLIPS[clip_b][0]])
                     page.wait_for_function(f"() => window.app.graph.getNodeById({vid})._aioliVC.meta", timeout=120000)
                     page.evaluate(CTRL, [vid, "mode", "side"])
                     time.sleep(2)
